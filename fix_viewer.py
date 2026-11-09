@@ -1,0 +1,11 @@
+from pathlib import Path
+p=Path('frontend/main.tsx')
+s=p.read_text(encoding='utf-8-sig')
+s=s.replace("[status,msg]=S('就绪')","[status,msg]=S('就绪'),[imageStatus,imageMsg]=S('请选择序列')")
+s=s.replace("if(images.length){await vp.current.setStack", "if(images.length){imageMsg('正在加载 DICOM 像素…');await vp.current.setStack")
+s=s.replace("idx);vp.current.render()}})().catch(e=>msg('影像加载失败：'+e));", "idx);if(cancelled)return;engine.current.resize(true,false);vp.current.resetCamera();vp.current.render();imageMsg('')}})().catch(e=>{console.error('DICOM load failed',e);imageMsg('影像加载失败：'+(e?.message||String(e)));});")
+s=s.replace("return <><header>","return <><header>")
+s=s.replace("<footer><button", "<div role=\"status\" style={{color:'#ffcf7d',padding:8}}>{imageStatus}</div><footer><button")
+s=s.replace("if(!im)return;e.currentTarget", "if(!im||!vp.current?.getImageData())return;e.currentTarget")
+s=s.replace("E(()=>{if(vp.current&&im)","E(()=>{if(vp.current&&im)")
+p.write_text(s,encoding='utf-8')

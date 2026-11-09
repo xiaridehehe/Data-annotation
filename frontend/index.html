@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Knee MRI Annotation</title>
+<style>body{margin:0;background:#0c1421;color:#dbe6f5;font:14px system-ui}#startup{padding:32px;white-space:pre-wrap}</style></head>
+<body><div id="root"><div id="startup">正在启动标注平台…</div></div>
+<script>
+function startupError(message) {
+ const node = document.getElementById('startup');
+ if(node) node.textContent = '平台启动失败：\n' + message;
+ console.error(message);
+}
+window.addEventListener('error', event => startupError(event.message || '资源加载失败'));
+window.addEventListener('unhandledrejection', event => startupError(event.reason?.message || String(event.reason)));
+</script>
+<script type="module">import('/main.tsx').catch(error => startupError(error.stack || error.message));</script>
+</body></html>

@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+pydicom
+sqlalchemy
+python-multipart
+numpy
+pillow
+pytest
+httpx

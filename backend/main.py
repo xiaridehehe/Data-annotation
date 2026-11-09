@@ -81,6 +81,13 @@ def save(kind:str,d:dict):
   existing=next((b for b in rows('boxes') if b['lesion_instance_id']==lesion['id'] and b['sop_instance_uid']==image['id']),None)
   if existing:d['id']=existing['id']
  if kind=='lesions':
+  existing=get('lesions',d.get('id',''))
+  if existing and existing.get('color'):d['color']=existing['color']
+  elif not d.get('color'):
+   used={l.get('color') for l in rows('lesions')}
+   color='#'+uuid.uuid4().hex[:6]
+   while color in used:color='#'+uuid.uuid4().hex[:6]
+   d['color']=color
   dis=get('diseases',d['disease_type_id'])
   if not dis or dis['box_policy']=='NONE':raise HTTPException(422,'该病害不支持病灶框')
  return put(kind,d)
@@ -108,3 +115,48 @@ def export(fmt:str):
  for b in s['boxes']:
   l=get('lesions',b['lesion_instance_id']);writer.writerow(['box',l['study_id'],l['series_id'],l['disease_type_id'],'',l['id'],b['sop_instance_uid'],*[b[k] for k in ['x_min','y_min','x_max','y_max']],json.dumps(l.get('attributes_json',{}),ensure_ascii=False)])
  return Response('\ufeff'+out.getvalue(),media_type='text/csv')
+
+# Explicit save creates an immutable database snapshot of the committed annotations.
+@app.post('/api/project/save')
+def save_project():
+ from datetime import datetime, timezone
+ snapshot=state()
+ record={'id':str(uuid.uuid4()),'saved_at':datetime.now(timezone.utc).isoformat(),'state':snapshot}
+ put('snapshots',record)
+ return {'id':record['id'],'saved_at':record['saved_at'],'message':'标注结果已保存到数据库'}
+
+@app.delete('/api/imported/{kind}/{item_id}')
+def remove_imported(kind:str,item_id:str):
+ if kind not in ['patients','studies','series']:raise HTTPException(400,'不支持的删除范围')
+ if not get(kind,item_id):raise HTTPException(404,'数据不存在')
+ snapshot=state()
+ study_ids={x['id'] for x in snapshot['studies'] if (kind=='patients' and x['patient_id']==item_id) or (kind=='studies' and x['id']==item_id)}
+ series_ids={x['id'] for x in snapshot['series'] if x['study_id'] in study_ids or (kind=='series' and x['id']==item_id)}
+ instances={x['id'] for x in snapshot['instances'] if x['series_id'] in series_ids}
+ lesions={x['id'] for x in snapshot['lesions'] if x['series_id'] in series_ids}
+ affected={'studies':study_ids,'series':series_ids,'instances':instances,'lesions':lesions}
+ affected['boxes']={x['id'] for x in snapshot['boxes'] if x['lesion_instance_id'] in lesions or x['sop_instance_uid'] in instances}
+ affected['assessments']={x['id'] for x in snapshot['assessments'] if x['study_id'] in study_ids}
+ affected['groups']={x['id'] for x in snapshot['groups'] if x.get('study_id') in study_ids}
+ affected['segmentations']={x['id'] for x in snapshot['segmentations'] if x.get('study_id') in study_ids or x.get('series_id') in series_ids}
+ if kind=='patients':affected['patients']={item_id}
+ from datetime import datetime,timezone
+ archive={'id':str(uuid.uuid4()),'saved_at':datetime.now(timezone.utc).isoformat(),'scope':{'kind':kind,'id':item_id},'records':{k:[x for x in snapshot[k] if x['id'] in ids] for k,ids in affected.items()}}
+ # Archive and remove references atomically; original files remain recoverable.
+ with engine.begin() as c:
+  c.execute(text('INSERT INTO records VALUES (:k,:i,:d)'),{'k':'deleted_imports','i':archive['id'],'d':json.dumps(archive,ensure_ascii=False)})
+  for k,ids in affected.items():
+   for item in ids:c.execute(text('DELETE FROM records WHERE kind=:k AND id=:i'),{'k':k,'i':item})
+ return {'ok':True,'archive_id':archive['id'],'message':'已从列表移除，原始影像和标注保留在数据库归档中'}
+
+@app.post('/api/imported/restore/{archive_id}')
+def restore_imported(archive_id:str):
+ archive=get('deleted_imports',archive_id)
+ if not archive:raise HTTPException(404)
+ with engine.begin() as c:
+  for k,items in archive['records'].items():
+   for item in items:
+    existing=c.execute(text('SELECT id FROM records WHERE id=:i'),{'i':item['id']}).first()
+    if not existing:c.execute(text('INSERT INTO records VALUES (:k,:i,:d)'),{'k':k,'i':item['id'],'d':json.dumps(item,ensure_ascii=False)})
+  c.execute(text('DELETE FROM records WHERE kind=:k AND id=:i'),{'k':'deleted_imports','i':archive_id})
+ return {'ok':True}

@@ -118,10 +118,10 @@ def export(fmt:str):
 
 # Explicit save creates an immutable database snapshot of the committed annotations.
 @app.post('/api/project/save')
-def save_project():
+def save_project(details:dict | None = None):
  from datetime import datetime, timezone
  snapshot=state()
- record={'id':str(uuid.uuid4()),'saved_at':datetime.now(timezone.utc).isoformat(),'state':snapshot}
+ record={'id':str(uuid.uuid4()),'saved_at':datetime.now(timezone.utc).isoformat(),'state':snapshot,'validation':details or {'assessment_status':'DRAFT'}}
  put('snapshots',record)
  return {'id':record['id'],'saved_at':record['saved_at'],'message':'标注结果已保存到数据库'}
 
@@ -160,3 +160,11 @@ def restore_imported(archive_id:str):
     if not existing:c.execute(text('INSERT INTO records VALUES (:k,:i,:d)'),{'k':k,'i':item['id'],'d':json.dumps(item,ensure_ascii=False)})
   c.execute(text('DELETE FROM records WHERE kind=:k AND id=:i'),{'k':'deleted_imports','i':archive_id})
  return {'ok':True}
+
+@app.delete('/api/slices/{uid}/boxes')
+def clear_slice_boxes(uid:str):
+ if not get('instances',uid):raise HTTPException(404,'切片不存在')
+ boxes=[b for b in rows('boxes') if b['sop_instance_uid']==uid]
+ with engine.begin() as c:
+  for box in boxes:c.execute(text('DELETE FROM records WHERE kind=:k AND id=:i'),{'k':'boxes','i':box['id']})
+ return {'deleted':boxes,'count':len(boxes)}

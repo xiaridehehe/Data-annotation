@@ -2,6 +2,7 @@ fastapi
 uvicorn
 pydicom
 sqlalchemy
+PyMySQL[rsa]
 python-multipart
 numpy
 pillow

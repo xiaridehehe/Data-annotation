@@ -5,17 +5,16 @@ import pydicom
 from fastapi import FastAPI, UploadFile, HTTPException
 from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+from backend.database import create_database_engine, upsert_sql
 from PIL import Image
 ROOT=Path(__file__).parent/'data'; ROOT.mkdir(exist_ok=True)
-engine=create_engine('sqlite:///'+str(ROOT/'annotations.db'))
-with engine.begin() as c:
- c.execute(text('CREATE TABLE IF NOT EXISTS records (kind TEXT, id TEXT PRIMARY KEY, data TEXT NOT NULL)'))
+engine=create_database_engine()
 def rows(kind):
  with engine.connect() as c: return [json.loads(r[0]) for r in c.execute(text('SELECT data FROM records WHERE kind=:k'),{'k':kind})]
 def put(k,d):
  d.setdefault('id',str(uuid.uuid4()))
- with engine.begin() as c: c.execute(text('INSERT OR REPLACE INTO records VALUES (:k,:i,:d)'),{'k':k,'i':d['id'],'d':json.dumps(d,ensure_ascii=False)})
+ with engine.begin() as c: c.execute(upsert_sql(engine),{'k':k,'i':d['id'],'d':json.dumps(d,ensure_ascii=False)})
  return d
 def get(k,i):
  return next((d for d in rows(k) if d['id']==i),None)
@@ -25,7 +24,8 @@ def disease(code,name,overall,local,policy='OPTIONAL'):
 severity=field('损伤程度','正常|轻度损伤|部分撕裂|完全断裂')
 location=field('损伤位置','股骨附着端|韧带中段|胫骨附着端')
 morph=field('损伤形态','纤维部分中断|纤维完全中断|韧带增粗|韧带松弛|韧带回缩',True)
-if not rows('diseases'):
+def ensure_diseases():
+ if rows('diseases'): return
  configs=[disease('ACL_INJURY','ACL 损伤',[field('损伤程度','正常|部分撕裂|完全断裂')],[field('受损束','前内侧束 AM|后外侧束 PL|两束均受损'),location,morph]),disease('PCL_INJURY','PCL 损伤',[severity],[field('受损束','前外侧束 AL|后内侧束 PM|两束均受损'),location,morph])]
  for code,name in [('MCL','MCL'),('LCL','LCL'),('PATELLAR_LIGAMENT','髌韧带'),('PATELLAR_RETINACULUM','髌骨支持带'),('QUADRICEPS_TENDON','股四头肌腱'),('POPLITEUS_TENDON','腘肌腱')]: configs.append(disease(code+'_INJURY',name+'损伤',[severity],[location,morph]))
  configs += [disease('MENISCUS_INJURY','半月板损伤',[field('损伤程度','0级正常|Ⅰ级退变|Ⅱ级退变|Ⅲ级撕裂')],[field('半月板类型','内侧半月板|外侧半月板'),field('撕裂形态','水平撕裂|垂直纵向撕裂|放射状撕裂|桶柄状撕裂|复杂撕裂|根部撕裂|瓣状撕裂',True),field('解剖位置','前角|体部|后角|前根|后根'),field('移位','无移位|移位'),field('突出','无突出|轻度突出|明显突出')]),disease('CARTILAGE_INJURY','软骨损伤',[field('损伤程度','0级正常|1级轻度缺损|2级重度缺损')],[field('缺损形态','软骨变薄|表面不规则|局灶性缺损|多发性缺损|全层缺损',True),field('解剖位置','股骨内侧髁|股骨外侧髁|股骨滑车|胫骨内侧平台|胫骨外侧平台|髌骨关节面')]),disease('HOFFA_FAT_PAD_ABNORMALITY','髌下脂肪垫异常',[field('异常程度','正常|轻度水肿|中度水肿|重度水肿')],[field('异常类型','水肿|挫伤|炎症|纤维化'),field('解剖位置','内侧|外侧|上部|下部'),field('异常形态','局灶性高信号|弥漫性高信号|脂肪垫肿胀|纤维化改变')]),disease('SYNOVIAL_ABNORMALITY','滑膜异常',[field('异常程度','正常|轻度异常|明显异常'),field('异常类型','滑膜增厚|滑膜炎'),field('异常形态','局灶性增厚|弥漫性增厚|滑膜不规则')],[],'NONE'),disease('JOINT_EFFUSION','关节积液',[field('积液程度','无积液|少量积液|中量积液|大量积液'),field('解剖位置','髌上囊|内侧关节隐窝|外侧关节隐窝|髌下关节隐窝|后方关节隐窝',True),field('积液分布','局限性|弥漫性|多区域分布'),field('积液性质','普通积液|积血|积脂|不确定')],[],'NONE')]
@@ -37,6 +37,7 @@ if not rows('diseases'):
     f=field(n,o);f['hide_when']={'损伤类型':'骨挫伤'};fs.append(f)
   configs.append(disease(code,name,[],fs,'REQUIRED'))
  for d in configs: put('diseases',d)
+ensure_diseases()
 # Upgrade display labels in existing databases without changing disease IDs.
 for code,label,legacy in [
  ('ACL_INJURY','前交叉韧带损伤（ACL）',{'ACL 损伤','ACL损伤'}),
@@ -50,7 +51,9 @@ for code,label,legacy in [
 app=FastAPI(title='Knee MRI Annotation')
 app.add_middleware(CORSMiddleware,allow_origins=['http://localhost:5173','http://127.0.0.1:5173'],allow_methods=['*'],allow_headers=['*'])
 @app.get('/api/state')
-def state(): return {k:rows(k) for k in ['patients','studies','series','instances','diseases','assessments','lesions','boxes','groups','segmentations']}
+def state():
+ ensure_diseases()
+ return {k:rows(k) for k in ['patients','studies','series','instances','diseases','assessments','lesions','boxes','groups','segmentations']}
 @app.post('/api/import')
 async def import_files(files:list[UploadFile]):
  count=0; errors=[]

@@ -54,9 +54,33 @@ app.add_middleware(CORSMiddleware,allow_origins=['http://localhost:5173','http:/
 def state():
  ensure_diseases()
  return {k:rows(k) for k in ['patients','studies','series','instances','diseases','assessments','lesions','boxes','groups','segmentations']}
+def reload_imported_annotations(uids):
+ # Prefer current edits, then the most recent archive. Restore only uploaded images.
+ images={i['id']:i for i in rows('instances') if i['id'] in uids}
+ series_ids={i['series_id'] for i in images.values()}
+ study_ids={s['study_id'] for s in rows('series') if s['id'] in series_ids}
+ restored=0
+ with engine.begin() as c:
+  for archive in sorted(rows('deleted_imports'),key=lambda a:a.get('saved_at',''),reverse=True):
+   records=archive['records']
+   lesions=[l for l in records.get('lesions',[]) if l['series_id'] in series_ids]
+   lesion_ids={l['id'] for l in lesions}
+   selected={
+    'groups':[g for g in records.get('groups',[]) if g.get('id') in {l.get('lesion_group_id') for l in lesions}],
+    'lesions':lesions,
+    'assessments':[a for a in records.get('assessments',[]) if a['study_id'] in study_ids],
+    'boxes':[b for b in records.get('boxes',[]) if b['sop_instance_uid'] in images and (b['lesion_instance_id'] in lesion_ids or get('lesions',b['lesion_instance_id']))],
+    'segmentations':[a for a in records.get('segmentations',[]) if a.get('series_id') in series_ids and (not a.get('sop_instance_uid') or a['sop_instance_uid'] in images)],
+   }
+   for kind,items in selected.items():
+    for item in items:
+     if not c.execute(text('SELECT id FROM records WHERE kind=:k AND id=:i'),{'k':kind,'i':item['id']}).first():
+      c.execute(upsert_sql(engine),{'k':kind,'i':item['id'],'d':json.dumps(item,ensure_ascii=False)});restored+=1
+ return restored
+
 @app.post('/api/import')
 async def import_files(files:list[UploadFile]):
- count=0; errors=[]
+ count=0; errors=[]; imported_uids=set()
  for upload in files:
   raw=await upload.read()
   entries=[(upload.filename,raw)]
@@ -75,9 +99,10 @@ async def import_files(files:list[UploadFile]):
      normal=np.cross(orient[:3],orient[3:]);order=float(np.dot(normal,pos));axis=['SAG','COR','AX'][int(np.argmax(abs(normal)))]
     put('series',{'id':series,'study_id':study,'description':str(getattr(ds,'SeriesDescription',getattr(ds,'ProtocolName','未命名序列'))),'number':str(getattr(ds,'SeriesNumber','')),'orientation':axis})
     meta={k:str(getattr(ds,k,'')) for k in ['Modality','PixelSpacing','SliceThickness','SpacingBetweenSlices','WindowCenter','WindowWidth','MagneticFieldStrength','RepetitionTime','EchoTime','Laterality','ProtocolName']}
-    put('instances',{'id':uid,'series_id':series,'path':str(path),'order':order,'width':int(ds.Columns),'height':int(ds.Rows),'position':pos,'orientation':orient,'metadata':meta});count+=1
+    put('instances',{'id':uid,'series_id':series,'path':str(path),'order':order,'width':int(ds.Columns),'height':int(ds.Rows),'position':pos,'orientation':orient,'metadata':meta});count+=1;imported_uids.add(uid)
    except Exception as e: errors.append({'file':name,'error':str(e)})
- return {'imported':count,'skipped':errors}
+ restored=reload_imported_annotations(imported_uids) if imported_uids else 0
+ return {'imported':count,'skipped':errors,'restored_annotations':restored}
 @app.get('/api/dicom/{uid}')
 def dicom(uid:str):
  d=get('instances',uid)
@@ -220,3 +245,48 @@ def clear_slice_boxes(uid:str):
  with engine.begin() as c:
   for box in boxes:c.execute(text('DELETE FROM records WHERE kind=:k AND id=:i'),{'k':'boxes','i':box['id']})
  return {'deleted':boxes,'count':len(boxes)}
+
+def normalize_browser_assessments(state):
+ # Expand legacy study-wide assessments into independent series assessments.
+ assessments=state.get('assessments',[]); normalized={}
+ for assessment in sorted(assessments,key=lambda a:bool(a.get('series_id'))):
+  targets=[a for a in state.get('series',[]) if a['study_id']==assessment['study_id'] and (not assessment.get('series_id') or a['id']==assessment['series_id'])]
+  for series in targets:
+   key=':'.join([assessment['study_id'],series['id'],assessment['disease_type_id']])
+   if assessment['disease_type_id']=='MENISCUS_INJURY':key+=':'+assessment.get('target_key','MENISCUS_INJURY')
+   existing=normalized.get(key)
+   if existing and not assessment.get('series_id') and assessment.get('target_key')!='MENISCUS_OVERALL':continue
+   normalized[key]={**assessment,'id':key,'series_id':series['id'],'target_key':assessment.get('target_key',assessment['disease_type_id']) if assessment['disease_type_id']=='MENISCUS_INJURY' else assessment['disease_type_id']}
+ state['assessments']=list(normalized.values())
+ return state
+
+# Browser-only DICOM workflow: persist annotations and indexing metadata, never files.
+@app.get('/api/browser-project/{workspace_id}')
+def browser_project(workspace_id:str):
+ try: uuid.UUID(workspace_id)
+ except ValueError: raise HTTPException(422,'无效的标注空间')
+ record=get('browser_projects',workspace_id)
+ if record:
+  record['state']=normalize_browser_assessments(record['state'])
+ return {'state':record['state'] if record else None}
+
+@app.put('/api/browser-project/{workspace_id}')
+def save_browser_project(workspace_id:str, payload:dict):
+ try: uuid.UUID(workspace_id)
+ except ValueError: raise HTTPException(422,'无效的标注空间')
+ allowed={'patients','studies','series','instances','diseases','assessments','lesions','boxes','groups','segmentations','archives','saved_at'}
+ if set(payload)-allowed: raise HTTPException(422,'不支持的数据字段')
+ def check(value):
+  if isinstance(value,dict):
+   for key,item in value.items():
+    if key.lower() in {'pixeldata','pixel_data','path','imageid','file','blob'}:raise HTTPException(422,'禁止上传影像文件或像素')
+    check(item)
+  elif isinstance(value,list):
+   for item in value:check(item)
+ check(payload)
+ for kind in ['patients','studies','series','instances','diseases','assessments','lesions','boxes','groups','segmentations']:
+  if not isinstance(payload.get(kind),list):raise HTTPException(422,'缺少数据列表：'+kind)
+ from datetime import datetime,timezone
+ saved_at=datetime.now(timezone.utc).isoformat()
+ put('browser_projects',{'id':workspace_id,'state':normalize_browser_assessments(payload),'saved_at':saved_at})
+ return {'ok':True,'saved_at':saved_at}

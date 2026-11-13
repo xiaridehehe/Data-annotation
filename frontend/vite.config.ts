@@ -28,6 +28,7 @@ const parserModule = {
 };
 export default defineConfig({
   plugins: [parserModule],
+  server: { proxy: { '/api': 'http://127.0.0.1:8000' } },
   assetsInclude: ['**/*.wasm'],
   optimizeDeps: { exclude: ['@cornerstonejs/dicom-image-loader', 'dicom-parser'] },
   worker: { format: 'es', plugins: () => [parserModule] },

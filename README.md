@@ -1,3 +1,19 @@
+# 本地影像 + 服务器标注
+
+DICOM 文件夹和 ZIP 在浏览器中解析，像素不上传。标注、患者/检查/序列标识及影像尺寸等匹配元数据保存到服务器 MySQL 的 records 表，kind 为 browser_projects，每个浏览器独立标注空间。此标识是调试阶段的数据隔离方式，尚未接入用户登录和权限系统。
+
+Windows 双击 start-windows.bat，同时启动前端和后端。需按 MYSQL_SETUP.md 配置 MySQL。访问 http://127.0.0.1:5173，Vite 将 /api 转发至本机 8000 端口。统一部署时，需将网站同源 /api 反向代理到 Python 后端。
+
+刷新后重新选择本地影像，按 DICOM UID 匹配服务器标注。此前浏览器 IndexedDB 中的标注，在该浏览器的服务器标注空间尚不存在时自动迁入数据库。旧版服务端导入的标注尚未迁入新的浏览器空间。
+
+标注每次编辑后写入数据库，保存按钮记录保存时间。服务端不可用时会显示保存错误。影像不会写入 backend/data。
+
+验证：npm --prefix frontend run build；使用独立测试数据库运行 python -m pytest tests。
+
+---
+
+以下为旧版服务端模式的历史说明：
+
 # Knee MRI Annotation
 
 本地膝关节 MRI 标注项目。Windows 双击 start-windows.bat；Linux 运行 bash start-linux.sh。需要 Python 3.11+、Node.js 20+，首次启动联网安装依赖。访问 http://127.0.0.1:5173，API 文档 http://127.0.0.1:8000/docs。

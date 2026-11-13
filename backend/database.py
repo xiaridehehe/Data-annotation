@@ -2,7 +2,7 @@
 import json
 import os
 from pathlib import Path
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.engine import URL
 
 CONFIG = Path(__file__).parent / 'mysql.local.json'
@@ -30,6 +30,14 @@ def create_database_engine():
             connection.execute(text('CREATE TABLE IF NOT EXISTS records (kind TEXT, id TEXT PRIMARY KEY, data TEXT NOT NULL)'))
         else:
             raise RuntimeError('只支持 MySQL 或显式指定的 SQLite 测试数据库')
+    from backend.models import metadata
+    metadata.create_all(engine)
+    # create_all does not add columns to tables created by an earlier release.
+    columns = {column['name'] for column in inspect(engine).get_columns('assessments')}
+    if 'deleted_at' not in columns:
+        column_type = 'DATETIME(6)' if engine.dialect.name == 'mysql' else 'DATETIME'
+        with engine.begin() as connection:
+            connection.execute(text('ALTER TABLE assessments ADD COLUMN deleted_at ' + column_type + ' NULL'))
     return engine
 
 

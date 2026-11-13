@@ -25,3 +25,7 @@ ACL 整体评价以检查、病害、目标键唯一保存，切换序列共用�
 验证：python -m pytest tests；npm --prefix frontend run build。
 
 当前交付为可继续开发的首版，尚未达到提示词全部验收项：框采用坐标输入编辑，尚缺影像上的框叠加和拖动编辑；撤销重做尚未覆盖删除和复合操作；部分内置病害字段需进一步按教程精确补齐；病害配置使用 JSON 编辑，尚缺完整可视化字段编辑、归档管理；数据库使用 SQLAlchemy 通用记录存储，未拆成要求的十一张实体表；尚未实现分割服务、跨序列分组交互与完整标注状态管理。尚未完成真实临床 DICOM 的浏览器端验收，不应将构建成功等同于完整业务验收。
+
+### 当前关系表存储
+浏览器标注使用 workspaces、patients、studies、series、images、diseases、assessments、lesions、boxes 九张关系表，核心字段独立存列。前端只提交变化记录，按记录版本防止覆盖；半月板内外侧分别评估。SQL 和完整接入说明见 [MYSQL_SETUP.md](MYSQL_SETUP.md) 与 [backend/schema.sql](backend/schema.sql)。
+不执行旧数据迁移，不包含账号、权限、任务分配。旧服务端接口仍使用 records，不与新表同步。当前读取仍是全空间加载，尚未实现分页。

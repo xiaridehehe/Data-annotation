@@ -23,7 +23,7 @@ def main():
     CONFIG.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding='utf-8')
     configured = create_database_engine()
     configured.dispose()
-    print('连接成功，records 表已准备好。配置保存在 backend/mysql.local.json，请勿分享此文件。')
+    print('连接成功，业务表已准备好（workspaces、patients、studies、series、images、diseases、assessments、lesions、boxes；records 仅供旧接口使用）。配置保存在 backend/mysql.local.json，请勿分享此文件。')
 
 
 if __name__ == '__main__':

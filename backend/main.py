@@ -33,7 +33,7 @@ def ensure_diseases():
   fs=[field('损伤类型',types),field('骨骼名称','股骨|胫骨|髌骨|腓骨'),field('解剖位置')]
   fs[2]['options_by']={'field':'骨骼名称','values':{'股骨':['内侧髁','外侧髁','髁间区'],'胫骨':['内侧平台','外侧平台','髁间棘'],'髌骨':['上部','下部','内侧部','外侧部'],'腓骨':['腓骨头','腓骨近端其他区域']}}
   if code=='BONE_INJURY':
-   for n,o in [('骨折形态','普通骨折|粉碎性骨折|塌陷性骨折|隐匿性骨折|不适用'),('撕脱','是|否|不适用'),('骨折状态','急性|陈旧性|不适用'),('移位','移位|未移位|不适用')]:
+   for n,o in [('骨折形态','普通骨折|粉碎性骨折|塌陷性骨折|隐匿性骨折|不适用'),('骨折状态','急性|陈旧性|不适用'),('移位','移位|未移位|不适用')]:
     f=field(n,o);f['hide_when']={'损伤类型':'骨挫伤'};fs.append(f)
   configs.append(disease(code,name,[],fs,'REQUIRED'))
  for d in configs: put('diseases',d)
@@ -246,47 +246,12 @@ def clear_slice_boxes(uid:str):
   for box in boxes:c.execute(text('DELETE FROM records WHERE kind=:k AND id=:i'),{'k':'boxes','i':box['id']})
  return {'deleted':boxes,'count':len(boxes)}
 
-def normalize_browser_assessments(state):
- # Expand legacy study-wide assessments into independent series assessments.
- assessments=state.get('assessments',[]); normalized={}
- for assessment in sorted(assessments,key=lambda a:bool(a.get('series_id'))):
-  targets=[a for a in state.get('series',[]) if a['study_id']==assessment['study_id'] and (not assessment.get('series_id') or a['id']==assessment['series_id'])]
-  for series in targets:
-   key=':'.join([assessment['study_id'],series['id'],assessment['disease_type_id']])
-   if assessment['disease_type_id']=='MENISCUS_INJURY':key+=':'+assessment.get('target_key','MENISCUS_INJURY')
-   existing=normalized.get(key)
-   if existing and not assessment.get('series_id') and assessment.get('target_key')!='MENISCUS_OVERALL':continue
-   normalized[key]={**assessment,'id':key,'series_id':series['id'],'target_key':assessment.get('target_key',assessment['disease_type_id']) if assessment['disease_type_id']=='MENISCUS_INJURY' else assessment['disease_type_id']}
- state['assessments']=list(normalized.values())
- return state
+# Current browser workflow uses nine relational tables and per-record changes.
+from backend import relational_api
+relational_api.engine = engine
+app.include_router(relational_api.router)
 
-# Browser-only DICOM workflow: persist annotations and indexing metadata, never files.
 @app.get('/api/browser-project/{workspace_id}')
-def browser_project(workspace_id:str):
- try: uuid.UUID(workspace_id)
- except ValueError: raise HTTPException(422,'无效的标注空间')
- record=get('browser_projects',workspace_id)
- if record:
-  record['state']=normalize_browser_assessments(record['state'])
- return {'state':record['state'] if record else None}
-
 @app.put('/api/browser-project/{workspace_id}')
-def save_browser_project(workspace_id:str, payload:dict):
- try: uuid.UUID(workspace_id)
- except ValueError: raise HTTPException(422,'无效的标注空间')
- allowed={'patients','studies','series','instances','diseases','assessments','lesions','boxes','groups','segmentations','archives','saved_at'}
- if set(payload)-allowed: raise HTTPException(422,'不支持的数据字段')
- def check(value):
-  if isinstance(value,dict):
-   for key,item in value.items():
-    if key.lower() in {'pixeldata','pixel_data','path','imageid','file','blob'}:raise HTTPException(422,'禁止上传影像文件或像素')
-    check(item)
-  elif isinstance(value,list):
-   for item in value:check(item)
- check(payload)
- for kind in ['patients','studies','series','instances','diseases','assessments','lesions','boxes','groups','segmentations']:
-  if not isinstance(payload.get(kind),list):raise HTTPException(422,'缺少数据列表：'+kind)
- from datetime import datetime,timezone
- saved_at=datetime.now(timezone.utc).isoformat()
- put('browser_projects',{'id':workspace_id,'state':normalize_browser_assessments(payload),'saved_at':saved_at})
- return {'ok':True,'saved_at':saved_at}
+def obsolete_browser_project(workspace_id:str):
+ raise HTTPException(410,'旧版空间接口已停用，请刷新前端使用关系表接口')

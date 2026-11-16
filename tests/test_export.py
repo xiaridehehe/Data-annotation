@@ -16,6 +16,8 @@ def test_series_export_complete_and_incomplete(tmp_path,monkeypatch):
  m.put('lesions',{'id':'lesion','study_id':'study','series_id':'selected','disease_type_id':'custom','attributes_json':{}})
  m.put('boxes',{'id':'box','lesion_instance_id':'lesion','sop_instance_uid':'image-selected','slice_index':0,'x_min':10,'y_min':20,'x_max':40,'y_max':60,'image_width':100,'image_height':100})
  c=TestClient(m.app)
+ _u='test'+__import__('uuid').uuid4().hex
+ assert c.post('/api/auth/register',json={'username':_u,'password':'TestPassword123','display_name':'测试人员'}).status_code==200
  for fmt in ['json','csv','coco']:assert c.get('/api/export/'+fmt,params={'series_id':'selected'}).status_code==422
  lesion=m.get('lesions','lesion');lesion['attributes_json']={'location':'femur'};m.put('lesions',lesion)
  data=c.get('/api/export/json?series_id=selected').json()

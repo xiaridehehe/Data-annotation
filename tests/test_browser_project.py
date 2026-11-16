@@ -5,6 +5,7 @@ from sqlalchemy import create_engine, select, event
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from backend import models as m, relational_api as api
+from backend.auth import require_user
 
 @pytest.fixture
 def client(tmp_path,monkeypatch):
@@ -14,6 +15,7 @@ def client(tmp_path,monkeypatch):
     m.metadata.create_all(engine)
     monkeypatch.setattr(api,'engine',engine)
     app=FastAPI();app.include_router(api.router)
+    app.dependency_overrides[require_user]=lambda:dict(id=1,username='tester')
     with TestClient(app,headers={'X-Operator':'tester'}) as c: yield c,engine
     engine.dispose()
 
@@ -38,7 +40,7 @@ def test_same_patient_multiple_studies_and_scoped_ids(client):
     assert len({s['study_id'] for s in data['series']})==2
     with engine.connect() as db:
         assert len(db.execute(select(m.studies)).all())==4
-        assert set(m.metadata.tables)=={'workspaces','patients','studies','series','images','diseases','assessments','lesions','boxes','change_logs'}
+        assert set(m.metadata.tables)=={'workspaces','patients','studies','series','images','diseases','assessments','lesions','boxes','change_logs','users','user_sessions'}
         assert all('data' not in t.c for t in m.metadata.tables.values())
 
 def assessment(side, value, series='1.2.1.1'):
@@ -141,10 +143,10 @@ def test_actor_audit_and_latest_result(client):
     value['attributes_json']={'损伤程度':'完全断裂'}
     assert c.post(base+'/changes',headers={'X-Operator':'doctor-B'},json={'operations':[operation('assessments',value,1)]}).status_code==200
     assert c.post(base+'/changes',headers={'X-Operator':'doctor-C'},json={'operations':[operation('assessments',value,1)]}).status_code==409
-    assert c.post(base+'/changes',headers={'X-Operator':''},json={'operations':[]}).status_code==422
+    assert c.post(base+'/changes',headers={'X-Operator':''},json={'operations':[]}).status_code==200
     with engine.connect() as db:
         logs=db.execute(select(m.change_logs).where(m.change_logs.c.entity_type=='assessments').order_by(m.change_logs.c.id)).mappings().all()
-        assert [r['actor'] for r in logs]==['张医生','doctor-B']
+        assert [r['actor'] for r in logs]==['tester','tester']
         assert logs[0]['before_value'] is None
         assert logs[1]['before_value']['attributes']['损伤程度']=='部分撕裂'
         assert logs[1]['after_value']['attributes']['损伤程度']=='完全断裂'

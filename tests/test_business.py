@@ -1,6 +1,8 @@
 from fastapi.testclient import TestClient
 from backend.main import app
 c=TestClient(app)
+_u='test'+__import__('uuid').uuid4().hex
+assert c.post('/api/auth/register',json={'username':_u,'password':'TestPassword123','display_name':'测试人员'}).status_code==200
 def test_assessment_unique():
  d=dict(study_id='test',disease_type_id='ACL_INJURY',target_key='ACL',attributes_json={'损伤程度':'部分撕裂'})
  a=c.put('/api/assessments',json=d).json();d['attributes_json']={'损伤程度':'完全断裂'}

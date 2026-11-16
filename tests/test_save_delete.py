@@ -2,6 +2,8 @@ import uuid
 from fastapi.testclient import TestClient
 from backend.main import app,put,get
 c=TestClient(app)
+_u='test'+__import__('uuid').uuid4().hex
+assert c.post('/api/auth/register',json={'username':_u,'password':'TestPassword123','display_name':'测试人员'}).status_code==200
 def test_save_and_remove_restore():
  u='test-'+str(uuid.uuid4());put('patients',{'id':u});put('studies',{'id':u+'study','patient_id':u});put('series',{'id':u+'series','study_id':u+'study'});put('assessments',{'id':u+'assessment','study_id':u+'study','disease_type_id':'ACL_INJURY','target_key':'ACL','attributes_json':{'severity':'partial'}})
  saved=c.post('/api/project/save');assert saved.status_code==200;assert get('snapshots',saved.json()['id'])

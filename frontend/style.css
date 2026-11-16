@@ -34,3 +34,7 @@ main>aside:last-child>select{flex-shrink:0;margin:0 0 12px}main>aside:last-child
 .lesion-entry.selected { background:#243047; }
 
 .lesion-incomplete { display:inline-block; margin-left:8px; padding:2px 6px; border-radius:4px; background:#513c23; color:#ffd083; font-size:12px; font-weight:500; }
+.auth-shell{min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b1420;padding:24px;box-sizing:border-box}.auth-card{width:420px;max-width:100%;padding:32px;background:#142438;border:1px solid #35536d;border-radius:14px;display:flex;flex-direction:column;gap:16px}.auth-card h1{font-size:23px;margin:0}.auth-card h2,.auth-card p{margin:0}.auth-card label{display:flex;flex-direction:column;gap:7px}.auth-card input{box-sizing:border-box;width:100%;padding:11px}.auth-card button{padding:11px}.auth-card small{color:#9bb7cb}.auth-error{color:#ffb0b0}
+
+/* Keep more vertical space for the image viewport on laptop-sized screens. */
+main>article>.annotation-panel{height:170px;min-height:170px;max-height:170px;flex-basis:170px}

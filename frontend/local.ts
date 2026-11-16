@@ -11,12 +11,12 @@ async function cacheImage(uid:string,file:File){let d=await db();await new Promi
 let restored:Promise<void>;
 function restoreImages(){return restored ||= (async()=>{let d=await db();await new Promise<void>((resolve,reject)=>{let t=d.transaction('dicom'),r=t.objectStore('dicom').openCursor();r.onsuccess=()=>{let cursor=r.result;if(cursor){if(!files.has(String(cursor.key)))files.set(String(cursor.key),wadouri.fileManager.add(cursor.value));cursor.continue()}};t.oncomplete=()=>resolve();t.onerror=()=>reject(t.error)})})()}
 function workspace(){return '00000000-0000-4000-8000-000000000001'}
-export function operatorName(){return localStorage.getItem('knee-operator')||''}
-export function setOperatorName(value:string){localStorage.setItem('knee-operator',value.trim())}
+function stablePatientId(value:string){
+ let hash=(text:string)=>{let h1=0xdeadbeef,h2=0x41c6ce57,h3=0xc0decafe,h4=0x9e3779b9;for(let i=0;i<text.length;i++){let c=text.charCodeAt(i);h1=Math.imul(h1^c,2654435761);h2=Math.imul(h2^c,1597334677);h3=Math.imul(h3^c,2246822507);h4=Math.imul(h4^c,3266489909)}for(let i=0;i<3;i++){h1=Math.imul(h1^(h1>>>16),2246822507);h2=Math.imul(h2^(h2>>>13),3266489909);h3=Math.imul(h3^(h3>>>16),2654435761);h4=Math.imul(h4^(h4>>>13),1597334677)}return [h1,h2,h3,h4].map(x=>(x>>>0).toString(16).padStart(8,'0')).join('')};return hash(value)+hash('\0'+value)}
 
 let currentState:any;
 const knownVersions=new Map<string,number>();
-async function remote(path:string,body?){if(body&&!operatorName().trim())throw Error('请先填写姓名或工号');let r=await fetch('/api/workspaces/'+workspace()+path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','X-Operator':encodeURIComponent(operatorName())},body:body?JSON.stringify(body):undefined});if(!r.ok){let raw=await r.text();let detail='';try{detail=JSON.parse(raw).detail||''}catch{}throw Error(detail||(r.status>=500?'服务器处理失败（HTTP '+r.status+'），请检查后端日志和数据库表结构':'请求失败（HTTP '+r.status+'）'))}return r.json()}
+async function remote(path:string,body?){let r=await fetch('/api/workspaces/'+workspace()+path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});if(r.status===401)window.dispatchEvent(new Event('auth-expired'));if(!r.ok){let raw=await r.text();let detail='';try{detail=JSON.parse(raw).detail||''}catch{}throw Error(detail||(r.status>=500?'服务器处理失败（HTTP '+r.status+'），请检查后端日志和数据库表结构':'请求失败（HTTP '+r.status+'）'))}return r.json()}
 async function read(force=false){await restoreImages();if(force||!currentState){let result=await remote('/state');currentState=result.state;for(let k of kinds)for(let item of [...(currentState[k]||[]),...(currentState._deleted?.[k]||[])])knownVersions.set(k+':'+item.id,item.version)}return structuredClone(currentState)}
 async function write(s){let operations=[];for(let k of kinds){if(['groups','segmentations'].includes(k))continue;let old=new Map<string,any>((currentState[k]||[]).map(x=>[x.id,x]));for(let item of s[k]||[]){let before=old.get(item.id);if(!before||JSON.stringify(before)!==JSON.stringify(item))operations.push({kind:k,action:'upsert',record:item,expected_version:before?.version??knownVersions.get(k+':'+item.id)??0});old.delete(item.id)}for(let item of old.values())operations.push({kind:k,action:'delete',record:{id:item.id},expected_version:item.version})}
  // Each ordinary edit is one short transaction. Imports are committed in bounded batches.
@@ -27,6 +27,7 @@ async function write(s){let operations=[];for(let k of kinds){if(['groups','segm
 let queue=Promise.resolve();
 function upsert(s,k,d){let i=s[k].findIndex(x=>x.id===d.id);if(i<0)s[k].push(d);else s[k][i]=d;return d}
 export function imageId(uid){let id=files.get(uid);if(!id)throw Error('请重新选择本地影像文件，已有标注会自动载入');return id}
+export function newId(){if(globalThis.crypto?.randomUUID)return globalThis.crypto.randomUUID();let bytes=new Uint8Array(16);if(globalThis.crypto?.getRandomValues)globalThis.crypto.getRandomValues(bytes);else for(let i=0;i<bytes.length;i++)bytes[i]=Math.floor(Math.random()*256);bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;let hex=Array.from(bytes,x=>x.toString(16).padStart(2,'0')).join('');return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`}
 export function req(path,method='GET',data?):Promise<any>{let task=queue.then(async()=>{let s=await read(path==='/state'),p=path.split('/').filter(Boolean).map(decodeURIComponent),result:any;
  if(path==='/state')return s;
  if(p[0]==='imported'){
@@ -34,10 +35,10 @@ export function req(path,method='GET',data?):Promise<any>{let task=queue.then(as
  let item=s[p[1]]?.find(x=>x.id===p[2]);if(!item)throw Error('数据不存在');let result=await remote('/visibility',{kind:p[1],id:p[2],expected_version:item.version,restore:false});currentState=undefined;return result
  }
  if(method==='PUT'){
- let k=p[0],d={...data};d.id ||= crypto.randomUUID();
+ let k=p[0],d={...data};d.id ||= newId();
  if(k==='assessments'&&!d.series_id)throw Error('整体评估必须选择序列');
  if(k==='assessments'){d.target_key=d.disease_type_id==='MENISCUS_INJURY'?d.target_key:'OVERALL';d.id=[d.series_id,d.disease_type_id,d.target_key].join('|')}
- if(k==='lesions')d.color=s.lesions.find(x=>x.id===d.id)?.color||d.color||'#'+crypto.randomUUID().replaceAll('-','').slice(0,6);
+ if(k==='lesions')d.color=s.lesions.find(x=>x.id===d.id)?.color||d.color||'#'+newId().replaceAll('-','').slice(0,6);
  if(k==='boxes'){let l=s.lesions.find(x=>x.id===d.lesion_instance_id),im=s.instances.find(x=>x.id===d.sop_instance_uid);if(!l||!im||l.series_id!==im.series_id)throw Error('序列不匹配');if(!(0<=d.x_min&&d.x_min<d.x_max&&d.x_max<=im.width&&0<=d.y_min&&d.y_min<d.y_max&&d.y_max<=im.height))throw Error('框坐标越界');d.id=[...s.boxes,...(s._deleted?.boxes||[])].find(x=>x.lesion_instance_id===l.id&&x.sop_instance_uid===im.id)?.id||d.id}
  result=upsert(s,k,d);
  }else if(path==='/project/save'){return remote('/changes',{operations:[]});
@@ -47,7 +48,7 @@ export function req(path,method='GET',data?):Promise<any>{let task=queue.then(as
 export async function importLocal(input:FileList|File[]){let entries:File[]=[];for(let f of Array.from(input)){if(f.name.toLowerCase().endsWith('.zip')){let zip=unzipSync(new Uint8Array(await f.arrayBuffer()));for(let [name,bytes] of Object.entries(zip))if(!name.endsWith('/'))entries.push(new File([bytes as BlobPart],name))}else entries.push(f)}
  let task=queue.then(async()=>{let s=await read(),count=0,errors=[],uids=new Set(),seriesIds=new Set(),studyIds=new Set();for(let f of entries)try{
  let ds=parseDicom(new Uint8Array(await f.arrayBuffer()));if(!ds.elements.x7fe00010)continue;if(Number(ds.string('x00280008')||1)>1)throw Error('暂不支持多帧 DICOM，请导入单帧影像');
- let val=t=>ds.string(t)||'',uid=val('x00080018'),study=val('x0020000d'),series=val('x0020000e'),patientCode=dicomText(ds,'x00100020'),issuer=dicomText(ds,'x00100021')||dicomText(ds,'x00080080'),patientSeed=patientCode&&issuer?issuer+'|'+patientCode:'study|'+study,patient=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(patientSeed)))).map(x=>x.toString(16).padStart(2,'0')).join('');if(!uid||!study||!series)throw Error('缺少 DICOM UID');
+ let val=t=>ds.string(t)||'',uid=val('x00080018'),study=val('x0020000d'),series=val('x0020000e'),patientCode=dicomText(ds,'x00100020'),issuer=dicomText(ds,'x00100021')||dicomText(ds,'x00080080'),patientSeed=patientCode&&issuer?issuer+'|'+patientCode:'study|'+study,patient=stablePatientId(patientSeed);if(!uid||!study||!series)throw Error('缺少 DICOM UID');
  let orient=val('x00200037').split('\\').filter(Boolean).map(Number),pos=val('x00200032').split('\\').filter(Boolean).map(Number),order=Number(val('x00200013'))||0,axis='未知';if(orient.length===6&&pos.length===3){let [a,b,c,d,e,g]=orient,n=[b*g-c*e,c*d-a*g,a*e-b*d];order=n.reduce((v,x,i)=>v+x*pos[i],0);axis=['SAG','COR','AX'][n.map(Math.abs).indexOf(Math.max(...n.map(Math.abs)))]}
  upsert(s,'patients',{...s.patients.find(x=>x.id===patient),id:patient,patient_code:patientCode||null,issuer:issuer||null});upsert(s,'studies',{id:study,patient_id:patient,description:dicomText(ds,'x00081030'),date:val('x00080020'),study_time:val('x00080030'),accession_number:val('x00080050')});upsert(s,'series',{id:series,study_id:study,description:dicomText(ds,'x0008103e')||dicomText(ds,'x00181030')||'未命名序列',number:val('x00200011'),orientation:axis,modality:val('x00080060')||'MR'});upsert(s,'instances',{id:uid,series_id:series,width:ds.uint16('x00280011'),height:ds.uint16('x00280010'),order,instance_number:Number(val('x00200013'))||null,position:pos,orientation:orient,pixel_spacing:val('x00280030').split('\\').filter(Boolean).map(Number),metadata:{}});
  await cacheImage(uid,f);files.set(uid,wadouri.fileManager.add(f));uids.add(uid);seriesIds.add(series);studyIds.add(study);count++;

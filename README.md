@@ -29,3 +29,6 @@ ACL 整体评价以检查、病害、目标键唯一保存，切换序列共用�
 ### 当前关系表存储
 浏览器标注使用 workspaces、patients、studies、series、images、diseases、assessments、lesions、boxes 九张关系表，核心字段独立存列。前端只提交变化记录，按记录版本防止覆盖；半月板内外侧分别评估。SQL 和完整接入说明见 [MYSQL_SETUP.md](MYSQL_SETUP.md) 与 [backend/schema.sql](backend/schema.sql)。
 不执行旧数据迁移，不包含账号、权限、任务分配。旧服务端接口仍使用 records，不与新表同步。当前读取仍是全空间加载，尚未实现分页。
+
+### 登录注册
+当前版本需要先注册/登录，支持退出和会话到期重新登录。所有账号仍共享最新标注结果，修改日志自动关联登录用户。新增 users、user_sessions 表及 change_logs.actor_user_id，启动时自动准备。无需手填操作人，不创建默认账号。完整数据库说明见 MYSQL_SETUP.md 的“登录注册”部分。

@@ -4,3 +4,6 @@ __pycache__/
 node_modules/
 backend/mysql.local.json
 backend/data/
+.deploy/
+*.db
+frontend/dist/

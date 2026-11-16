@@ -188,3 +188,33 @@ SELECT actor, entity_type, entity_key, action, created_at,
        before_value, after_value
 FROM change_logs ORDER BY id DESC LIMIT 100;
 ```
+
+
+## 登录注册（最新行为，替代手填操作人）
+
+刷新网页后，未登录时显示登录/注册页面。注册填写账号、姓名或工号、密码及确认密码，注册成功自动登录。账号统一转小写，长度 1–64 位，仅允许字母和数字。密码 1–128 位，仅允许字母或数字，无需同时包含两者。
+
+原有共享标注、重导入、绘框、导出和版本冲突检查保持原样；各账号共用最新结果。操作人不再手填，服务器根据会话识别账号，忽略 X-Operator。姓名或工号仅用于显示，日志保存账号名称及其用户外键。
+
+新增表：
+
+| 表 | 字段 | 说明 |
+| --- | --- | --- |
+| users | id、username、display_name、password_hash、active、created_at、updated_at | 用户账号，username 唯一；密码使用随机盐和 PBKDF2-SHA256 哈希 |
+| user_sessions | id、user_id、token_hash、expires_at、created_at、updated_at | 登录会话，只保存随机令牌的 SHA256 摘要，7 天到期 |
+| change_logs 新列 | actor_user_id | 可空外键指向 users.id；旧日志仍保留原 actor 文本 |
+
+服务启动自动创建新表，并为已有 change_logs 补齐 actor_user_id 列、外键和索引。已有数据库连接账号需要 ALTER、CREATE、REFERENCES 权限。这次不删除任何原有标注或日志，不会自动创建默认账号。
+
+接口：POST /api/auth/register、POST /api/auth/login、GET /api/auth/me、POST /api/auth/logout。登录与注册返回用户基本信息，并设置 HttpOnly、SameSite=Strict 的会话 Cookie；退出会删除服务器会话和 Cookie。其余 /api/ 数据接口要求登录，401 表示需要重新登录。
+
+本机 HTTP 可直接测试。若部署 HTTPS，设置 ANNOTATION_COOKIE_SECURE=1；使用额外的网站域名时，在 ANNOTATION_ALLOWED_ORIGINS 中填写完整来源地址（多个用逗号分隔）。权限角色、任务分配、密码找回不在本次范围内。
+
+查询修改人：
+
+```sql
+SELECT l.id, l.actor, u.display_name, l.entity_type, l.entity_key,
+       l.action, l.created_at
+FROM change_logs l LEFT JOIN users u ON u.id=l.actor_user_id
+ORDER BY l.id DESC LIMIT 100;
+```

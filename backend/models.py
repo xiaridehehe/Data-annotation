@@ -93,8 +93,16 @@ boxes = table('boxes', Column('series_id', ID, nullable=False, index=True),
 TABLES = dict(patients=patients, studies=studies, series=series, instances=images,
               diseases=diseases, assessments=assessments, lesions=lesions, boxes=boxes)
 
+users = table('users', Column('username',String(64),nullable=False,unique=True),
+    Column('display_name',String(128),nullable=False), Column('password_hash',String(256),nullable=False),
+    Column('active',Boolean,nullable=False,default=True))
+user_sessions = table('user_sessions', ref('user_id','users.id'),
+    Column('token_hash',String(64),nullable=False,unique=True),
+    Column('expires_at',DateTime().with_variant(DATETIME(fsp=6),'mysql'),nullable=False))
+
 # Append-only audit trail; current tables remain the latest state.
 change_logs = table('change_logs', ref('workspace_id','workspaces.id'),
+    Column('actor_user_id',ID,ForeignKey('users.id',ondelete='RESTRICT'),nullable=True,index=True),
     Column('actor',String(128),nullable=False), Column('entity_type',String(32),nullable=False),
     Column('entity_key',String(512),nullable=False), Column('action',String(32),nullable=False),
     Column('before_value',JSON), Column('after_value',JSON),

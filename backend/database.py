@@ -38,6 +38,13 @@ def create_database_engine():
         column_type = 'DATETIME(6)' if engine.dialect.name == 'mysql' else 'DATETIME'
         with engine.begin() as connection:
             connection.execute(text('ALTER TABLE assessments ADD COLUMN deleted_at ' + column_type + ' NULL'))
+    log_columns = {column['name'] for column in inspect(engine).get_columns('change_logs')}
+    if 'actor_user_id' not in log_columns:
+        with engine.begin() as connection:
+            connection.execute(text('ALTER TABLE change_logs ADD COLUMN actor_user_id BIGINT NULL REFERENCES users(id)'))
+            if engine.dialect.name == 'mysql':
+                connection.execute(text('ALTER TABLE change_logs ADD CONSTRAINT fk_log_actor FOREIGN KEY (actor_user_id) REFERENCES users(id)'))
+            connection.execute(text('CREATE INDEX ix_change_logs_actor_user_id ON change_logs (actor_user_id)'))
     return engine
 
 

@@ -49,6 +49,22 @@ for code,label,legacy in [
  if existing and existing.get('disease_name') in legacy:
   existing['disease_name']=label;put('diseases',existing)
 app=FastAPI(title='Knee MRI Annotation')
+from backend import auth
+from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
+auth.engine=engine
+app.include_router(auth.router)
+
+@app.middleware('http')
+async def authenticate_api(request,call_next):
+ if request.url.path.startswith('/api/') and request.method!='OPTIONS' and request.url.path not in {
+  '/api/auth/register','/api/auth/login','/api/auth/logout'}:
+  try: await run_in_threadpool(auth.require_user,request)
+  except HTTPException as error: return JSONResponse({'detail':error.detail},status_code=error.status_code)
+ response=await call_next(request)
+ if request.url.path.startswith('/api/'): response.headers['Cache-Control']='no-store'
+ return response
+
 app.add_middleware(CORSMiddleware,allow_origins=['http://localhost:5173','http://127.0.0.1:5173'],allow_methods=['*'],allow_headers=['*'])
 @app.get('/api/state')
 def state():

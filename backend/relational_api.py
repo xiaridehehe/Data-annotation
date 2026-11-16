@@ -5,12 +5,14 @@ import re
 import uuid
 from datetime import datetime
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from backend import models as m
 
-router = APIRouter(prefix='/api/workspaces')
+from backend.auth import require_user, current_actor
+
+router = APIRouter(prefix='/api/workspaces',dependencies=[Depends(require_user)])
 engine = None
 KINDS = tuple(m.TABLES)
 
@@ -243,20 +245,15 @@ def get_state(public_id:str):
             return {'state':state(c,ws['id'])}
     except IntegrityError: fail('空间正在初始化，请重试',409)
 
-def operator(value):
-    from urllib.parse import unquote
-    value=unquote(value) if isinstance(value,str) else value
-    return limited(value.strip() if isinstance(value,str) else value,128,'操作人姓名或工号')
-
 def audit(c,wid,actor,kind,key,action,before,after):
     def snapshot(row):
         return json.loads(json.dumps(dict(row),default=str,ensure_ascii=False)) if row is not None else None
-    c.execute(m.change_logs.insert().values(workspace_id=wid,actor=actor,entity_type=kind,
+    user_id=c.execute(select(m.users.c.id).where(m.users.c.username==actor)).scalar()
+    c.execute(m.change_logs.insert().values(workspace_id=wid,actor_user_id=user_id,actor=actor,entity_type=kind,
         entity_key=key,action=action,before_value=snapshot(before),after_value=snapshot(after)))
 
 @router.post('/{public_id}/changes')
-def changes(public_id:str,payload:dict, x_operator: str | None = Header(default=None)):
-    actor=operator(x_operator)
+def changes(public_id:str,payload:dict, actor: str = Depends(current_actor)):
     check_payload(payload)
     operations=payload.get('operations')
     if not isinstance(operations,list) or len(operations)>2000: fail('每批最多 2000 条操作')
@@ -302,8 +299,7 @@ def changes(public_id:str,payload:dict, x_operator: str | None = Header(default=
     except IntegrityError: fail('记录已存在或违反关联约束，请刷新后重试',409)
 
 @router.post('/{public_id}/visibility')
-def visibility(public_id:str,payload:dict, x_operator: str | None = Header(default=None)):
-    actor=operator(x_operator)
+def visibility(public_id:str,payload:dict, actor: str = Depends(current_actor)):
     kind=payload.get('kind')
     if kind not in ('studies','series'): fail('仅支持移除检查或序列')
     with engine.begin() as c:
@@ -320,8 +316,7 @@ def visibility(public_id:str,payload:dict, x_operator: str | None = Header(defau
         return {'ok':True,'archive_id':json.dumps(dict(kind=kind,id=payload['id'],version=row['version']+1)),
                 'message':'已恢复' if restored else '已移除，可撤销；影像索引和标注仍保留'}
 @router.post('/{public_id}/reimport')
-def reimport(public_id:str,payload:dict, x_operator: str | None = Header(default=None)):
-    actor=operator(x_operator)
+def reimport(public_id:str,payload:dict, actor: str = Depends(current_actor)):
     uids=payload.get('series_uids')
     if not isinstance(uids,list) or len(uids)>2000 or any(not isinstance(x,str) for x in uids):
         fail('无效的序列列表')

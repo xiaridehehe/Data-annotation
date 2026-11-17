@@ -45,6 +45,18 @@ def create_database_engine():
             if engine.dialect.name == 'mysql':
                 connection.execute(text('ALTER TABLE change_logs ADD CONSTRAINT fk_log_actor FOREIGN KEY (actor_user_id) REFERENCES users(id)'))
             connection.execute(text('CREATE INDEX ix_change_logs_actor_user_id ON change_logs (actor_user_id)'))
+    user_columns = {column['name'] for column in inspect(engine).get_columns('users')}
+    if 'role' not in user_columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR(16) NOT NULL DEFAULT 'ANNOTATOR'"))
+    # Bootstrap role management for installations that predate roles. The oldest
+    # account becomes the first administrator only when none exists.
+    with engine.begin() as connection:
+        admin_count = connection.execute(text("SELECT COUNT(*) FROM users WHERE role='ADMIN'")) .scalar()
+        if not admin_count:
+            first_id = connection.execute(text('SELECT MIN(id) FROM users')).scalar()
+            if first_id is not None:
+                connection.execute(text("UPDATE users SET role='ADMIN' WHERE id=:id"), {'id': first_id})
     return engine
 
 

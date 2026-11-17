@@ -95,7 +95,9 @@ TABLES = dict(patients=patients, studies=studies, series=series, instances=image
 
 users = table('users', Column('username',String(64),nullable=False,unique=True),
     Column('display_name',String(128),nullable=False), Column('password_hash',String(256),nullable=False),
-    Column('active',Boolean,nullable=False,default=True))
+    Column('role',String(16),nullable=False,default='ANNOTATOR',server_default='ANNOTATOR'),
+    Column('active',Boolean,nullable=False,default=True),
+    CheckConstraint("role IN ('ANNOTATOR','REVIEWER','ADMIN')", name='ck_user_role'))
 user_sessions = table('user_sessions', ref('user_id','users.id'),
     Column('token_hash',String(64),nullable=False,unique=True),
     Column('expires_at',DateTime().with_variant(DATETIME(fsp=6),'mysql'),nullable=False))
@@ -107,3 +109,21 @@ change_logs = table('change_logs', ref('workspace_id','workspaces.id'),
     Column('entity_key',String(512),nullable=False), Column('action',String(32),nullable=False),
     Column('before_value',JSON), Column('after_value',JSON),
     Index('ix_change_log_entity','workspace_id','entity_type','entity_key'))
+
+submissions = table('submissions', ref('workspace_id','workspaces.id'), ref('study_id','studies.id'),
+    Column('submitter_user_id',ID,ForeignKey('users.id',ondelete='RESTRICT'),nullable=False,index=True),
+    Column('reviewer_user_id',ID,ForeignKey('users.id',ondelete='RESTRICT'),nullable=True,index=True),
+    Column('status',String(16),nullable=False,default='SUBMITTED'),
+    Column('rejection_reason',String(1000)), Column('submitted_at',DateTime(),nullable=False),
+    Column('reviewed_at',DateTime()), Column('revision',Integer,nullable=False,default=1,server_default='1'),
+    UniqueConstraint('workspace_id','study_id'),
+    CheckConstraint("status IN ('SUBMITTED','APPROVED','REJECTED')", name='ck_submission_status'))
+
+# Append-only lifecycle audit for submissions.  Unlike ``submissions`` this
+# table is never updated, so earlier submit/review decisions remain traceable.
+submission_review_history = table('submission_review_history', ref('submission_id','submissions.id'),
+    ref('actor_user_id','users.id'), Column('action',String(16),nullable=False),
+    Column('status',String(16),nullable=False), Column('revision',Integer,nullable=False),
+    Column('reason',String(1000)),
+    CheckConstraint("action IN ('SUBMIT','RESUBMIT','APPROVE','REJECT')", name='ck_review_history_action'),
+    CheckConstraint("status IN ('SUBMITTED','APPROVED','REJECTED')", name='ck_review_history_status'))

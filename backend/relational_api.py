@@ -10,7 +10,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from backend import models as m
 
-from backend.auth import require_user, current_actor
+from backend.auth import require_user
 
 router = APIRouter(prefix='/api/workspaces',dependencies=[Depends(require_user)])
 engine = None
@@ -252,8 +252,41 @@ def audit(c,wid,actor,kind,key,action,before,after):
     c.execute(m.change_logs.insert().values(workspace_id=wid,actor_user_id=user_id,actor=actor,entity_type=kind,
         entity_key=key,action=action,before_value=snapshot(before),after_value=snapshot(after)))
 
+def row_study_id(c,kind,row):
+    if not row or kind in ('patients','diseases'): return None
+    if kind=='studies': return row.get('id')
+    if kind=='series': return row['study_id']
+    series_id=row['series_id']
+    return c.execute(select(m.series.c.study_id).where(m.series.c.id==series_id)).scalar()
+
+def ensure_editable(c,kind,row,user):
+    study_id=row_study_id(c,kind,row)
+    role=user.get('role','ANNOTATOR')
+    if study_id is None:
+        if role=='REVIEWER': raise HTTPException(403,'审核人员只能修改待审核检查的标注')
+        return
+    status=c.execute(select(m.submissions.c.status).where(m.submissions.c.study_id==study_id)).scalar()
+    if role in ('REVIEWER','ADMIN') and status!='SUBMITTED':
+        fail('审核人员只能修改处于待审核状态的检查',409)
+
+def mark_submission_changed(c,study_ids,user):
+    if not study_ids: return
+    role=user.get('role','ANNOTATOR')
+    changed_at=stamp()
+    for study_id in study_ids:
+        row=c.execute(select(m.submissions).where(m.submissions.c.study_id==study_id).with_for_update()).mappings().first()
+        if not row: continue
+        values={'updated_at':changed_at}
+        # Editing approved content reopens the same revision. Revisions count
+        # explicit submissions, not individual annotation edits.
+        if role=='ANNOTATOR' and row['status']=='APPROVED':
+            values.update(status='SUBMITTED',reviewer_user_id=None,
+                rejection_reason=None,reviewed_at=None,submitted_at=changed_at)
+        c.execute(update(m.submissions).where(m.submissions.c.id==row['id']).values(**values))
+
 @router.post('/{public_id}/changes')
-def changes(public_id:str,payload:dict, actor: str = Depends(current_actor)):
+def changes(public_id:str,payload:dict, user=Depends(require_user)):
+    actor=user['username']
     check_payload(payload)
     operations=payload.get('operations')
     if not isinstance(operations,list) or len(operations)>2000: fail('每批最多 2000 条操作')
@@ -261,7 +294,7 @@ def changes(public_id:str,payload:dict, actor: str = Depends(current_actor)):
         with engine.begin() as c:
             ws=workspace(c,public_id);wid=ws['id']
             c.execute(select(m.workspaces.c.id).where(m.workspaces.c.id==wid).with_for_update()).first()
-            output=[];seen=set()
+            output=[];seen=set();touched_studies=set()
             for op in operations:
                 if not isinstance(op,dict): fail('操作格式错误')
                 kind=op.get('kind');action=op.get('action','upsert');d=op.get('record',{})
@@ -276,12 +309,18 @@ def changes(public_id:str,payload:dict, actor: str = Depends(current_actor)):
                 t=m.TABLES[kind]
                 if action=='delete':
                     if not old: fail('记录不存在',404)
+                    ensure_editable(c,kind,old,user)
+                    affected=row_study_id(c,kind,old)
+                    if affected: touched_studies.add(affected)
                     if kind not in ('boxes','lesions','assessments'): fail('请使用移除检查或序列接口')
                     c.execute(update(t).where(t.c.id==old['id'],t.c.version==expected).values(deleted_at=stamp(),version=expected+1,updated_at=stamp()))
                     audit(c,wid,actor,kind,key,'delete',old,lookup(c,kind,wid,key))
                     output.append(dict(kind=kind,id=key,version=expected+1));continue
                 if action!='upsert': fail('未知操作')
                 v=values(c,kind,wid,d)
+                ensure_editable(c,kind,old or v,user)
+                affected=row_study_id(c,kind,old or v)
+                if affected: touched_studies.add(affected)
                 if old:
                     # Existing image hierarchy is immutable; reimport cannot reparent it.
                     for fk in ('workspace_id','patient_id','study_id','series_id','disease_id','lesion_id','image_id'):
@@ -294,18 +333,21 @@ def changes(public_id:str,payload:dict, actor: str = Depends(current_actor)):
                     c.execute(t.insert().values(**v,version=1))
                 audit(c,wid,actor,kind,key,'update' if old else 'create',old,lookup(c,kind,wid,key))
                 output.append(dict(kind=kind,id=key,version=expected+1))
+            mark_submission_changed(c,touched_studies,user)
             c.execute(update(m.workspaces).where(m.workspaces.c.id==wid).values(updated_at=stamp()))
             return {'changes':output,'saved_at':stamp().isoformat()+'Z'}
     except IntegrityError: fail('记录已存在或违反关联约束，请刷新后重试',409)
 
 @router.post('/{public_id}/visibility')
-def visibility(public_id:str,payload:dict, actor: str = Depends(current_actor)):
+def visibility(public_id:str,payload:dict,user=Depends(require_user)):
+    actor=user['username']
     kind=payload.get('kind')
     if kind not in ('studies','series'): fail('仅支持移除检查或序列')
     with engine.begin() as c:
         ws=workspace(c,public_id);wid=ws['id']
         c.execute(select(m.workspaces.c.id).where(m.workspaces.c.id==wid).with_for_update()).first()
         row=lookup(c,kind,wid,payload.get('id'),lock=True)
+        ensure_editable(c,kind,row,user)
         if payload.get('expected_version')!=row['version']: fail('记录已改变，请刷新后重试',409)
         restored=payload.get('restore',False)
         if not isinstance(restored,bool): fail('restore 必须是布尔值')
@@ -316,7 +358,8 @@ def visibility(public_id:str,payload:dict, actor: str = Depends(current_actor)):
         return {'ok':True,'archive_id':json.dumps(dict(kind=kind,id=payload['id'],version=row['version']+1)),
                 'message':'已恢复' if restored else '已移除，可撤销；影像索引和标注仍保留'}
 @router.post('/{public_id}/reimport')
-def reimport(public_id:str,payload:dict, actor: str = Depends(current_actor)):
+def reimport(public_id:str,payload:dict,user=Depends(require_user)):
+    actor=user['username']
     uids=payload.get('series_uids')
     if not isinstance(uids,list) or len(uids)>2000 or any(not isinstance(x,str) for x in uids):
         fail('无效的序列列表')
@@ -326,6 +369,7 @@ def reimport(public_id:str,payload:dict, actor: str = Depends(current_actor)):
         for key in set(uids):
             se=lookup(c,'series',wid,key,required=False,lock=True)
             if se is None: continue
+            ensure_editable(c,'series',se,user)
             st=by_id(c,'studies',wid,se['study_id'])
             for t,row in ((m.studies,st),(m.series,se)):
                 if row['deleted_at']:

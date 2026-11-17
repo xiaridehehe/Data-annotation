@@ -54,6 +54,7 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 auth.engine=engine
 app.include_router(auth.router)
+app.include_router(auth.admin_router)
 
 @app.middleware('http')
 async def authenticate_api(request,call_next):
@@ -266,6 +267,9 @@ def clear_slice_boxes(uid:str):
 from backend import relational_api
 relational_api.engine = engine
 app.include_router(relational_api.router)
+from backend import workflow
+workflow.engine = engine
+app.include_router(workflow.router)
 
 @app.get('/api/browser-project/{workspace_id}')
 @app.put('/api/browser-project/{workspace_id}')

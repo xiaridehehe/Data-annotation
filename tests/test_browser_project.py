@@ -40,7 +40,7 @@ def test_same_patient_multiple_studies_and_scoped_ids(client):
     assert len({s['study_id'] for s in data['series']})==2
     with engine.connect() as db:
         assert len(db.execute(select(m.studies)).all())==4
-        assert set(m.metadata.tables)=={'workspaces','patients','studies','series','images','diseases','assessments','lesions','boxes','change_logs','users','user_sessions'}
+        assert set(m.metadata.tables)=={'workspaces','patients','studies','series','images','diseases','assessments','lesions','boxes','change_logs','users','user_sessions','submissions','submission_review_history'}
         assert all('data' not in t.c for t in m.metadata.tables.values())
 
 def assessment(side, value, series='1.2.1.1'):

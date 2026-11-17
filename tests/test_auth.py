@@ -16,23 +16,26 @@ def clients(tmp_path,monkeypatch):
         yield a,b,engine
     engine.dispose()
 
-def register(c,name='tester'):
-    return c.post('/api/auth/register',json=dict(username=name,password='StrongTest123',display_name='测试人员'))
+def seed_user(engine,name='tester',password='StrongTest123'):
+    with engine.begin() as c:
+        c.execute(m.users.insert().values(username=name.lower(),display_name='测试人员',
+            password_hash=auth.password_hash(password),role='ANNOTATOR',active=True))
 
 BASE='/api/workspaces/00000000-0000-4000-8000-000000000001'
 
-def test_register_login_cookie_logout_and_protection(clients):
+def test_login_cookie_logout_and_protection(clients):
     a,b,engine=clients
     assert a.get(BASE+'/state').status_code==401
     assert a.get('/api/auth/me').status_code==401
-    response=register(a)
+    assert a.post('/api/auth/register').status_code==403
+    seed_user(engine)
+    response=a.post('/api/auth/login',json={'username':'tester','password':'StrongTest123'})
     assert response.status_code==200
     assert 'password_hash' not in response.text
     assert 'HttpOnly' in response.headers['set-cookie'] and 'SameSite=strict' in response.headers['set-cookie']
     assert a.get('/api/auth/me').json()['user']['username']=='tester'
     assert a.get(BASE+'/state').status_code==200
     assert b.get(BASE+'/state').status_code==401
-    assert register(b,'TESTER').status_code==409
     assert b.post('/api/auth/login',json={'username':'tester','password':'WrongPassword123'}).status_code==401
     assert b.post('/api/auth/login',json={'username':'TESTER','password':'StrongTest123'}).status_code==200
     assert b.get(BASE+'/state').status_code==200
@@ -51,8 +54,9 @@ def test_register_login_cookie_logout_and_protection(clients):
 
 def test_actor_cannot_be_spoofed_and_shared_latest(clients):
     a,b,engine=clients
-    assert register(a,'first').status_code==200
-    assert register(b,'second').status_code==200
+    seed_user(engine,'first');seed_user(engine,'second')
+    assert a.post('/api/auth/login',json={'username':'first','password':'StrongTest123'}).status_code==200
+    assert b.post('/api/auth/login',json={'username':'second','password':'StrongTest123'}).status_code==200
     assert a.get(BASE+'/state').status_code==200
     record=dict(id='patient-key',patient_code='P1',issuer='hospital')
     def save(c,version,code):
@@ -72,8 +76,9 @@ def test_actor_cannot_be_spoofed_and_shared_latest(clients):
 
 def test_expiry_validation_and_cross_origin(clients):
     a,b,engine=clients
-    assert a.post('/api/auth/register',json={'username':'abc','password':'invalid!','display_name':'a'}).status_code==422
-    assert register(a).status_code==200
+    assert a.post('/api/auth/register',json={'username':'abc','password':'invalid!','display_name':'a'}).status_code==403
+    seed_user(engine)
+    assert a.post('/api/auth/login',json={'username':'tester','password':'StrongTest123'}).status_code==200
     assert b.post('/api/auth/login',headers={'Origin':'https://untrusted.example'},json={'username':'tester','password':'StrongTest123'}).status_code==403
     assert a.post(BASE+'/changes',headers={'Origin':'https://untrusted.example'},json={'operations':[]}).status_code==403
     with engine.begin() as c:
@@ -82,15 +87,15 @@ def test_expiry_validation_and_cross_origin(clients):
 
 
 def test_simple_alphanumeric_account(clients):
-    a,b,_=clients
-    assert register(a,'1').status_code==200
-    assert register(b,'aB123').status_code==200
-    assert a.post('/api/auth/register',json={'username':'a_b','password':'StrongTest123','display_name':'name'}).status_code==422
+    a,b,engine=clients
+    seed_user(engine,'1');seed_user(engine,'aB123')
+    assert a.post('/api/auth/login',json={'username':'1','password':'StrongTest123'}).status_code==200
+    assert b.post('/api/auth/login',json={'username':'aB123','password':'StrongTest123'}).status_code==200
 
 
 def test_simple_alphanumeric_password(clients):
-    a,b,_=clients
-    assert a.post('/api/auth/register',json={'username':'simple','password':'1','display_name':'name'}).status_code==200
+    a,b,engine=clients
+    seed_user(engine,'simple','1')
     assert b.post('/api/auth/login',json={'username':'simple','password':'1'}).status_code==200
     for password in ('','abc!','abc def'):
-        assert b.post('/api/auth/register',json={'username':'other','password':password,'display_name':'name'}).status_code==422
+        assert b.post('/api/auth/login',json={'username':'simple','password':password}).status_code in (401,422)

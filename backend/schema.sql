@@ -5,11 +5,13 @@ CREATE TABLE IF NOT EXISTS users (
 	username VARCHAR(64) NOT NULL,
 	display_name VARCHAR(128) NOT NULL,
 	password_hash VARCHAR(256) NOT NULL,
+	role VARCHAR(16) NOT NULL DEFAULT 'ANNOTATOR',
 	active BOOL NOT NULL,
 	created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
 	updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
 	PRIMARY KEY (id),
-	UNIQUE (username)
+	UNIQUE (username),
+	CONSTRAINT ck_user_role CHECK (role IN ('ANNOTATOR','REVIEWER','ADMIN'))
 )ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
 
 CREATE TABLE IF NOT EXISTS workspaces (
@@ -228,5 +230,51 @@ CREATE TABLE IF NOT EXISTS boxes (
 	INDEX ix_boxes_image_id (image_id),
 	INDEX ix_boxes_lesion_id (lesion_id),
 	INDEX ix_boxes_series_id (series_id)
+)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS submissions (
+	id BIGINT NOT NULL AUTO_INCREMENT,
+	workspace_id BIGINT NOT NULL,
+	study_id BIGINT NOT NULL,
+	submitter_user_id BIGINT NOT NULL,
+	reviewer_user_id BIGINT,
+	status VARCHAR(16) NOT NULL,
+	rejection_reason VARCHAR(1000),
+	submitted_at DATETIME NOT NULL,
+	reviewed_at DATETIME,
+	revision INTEGER NOT NULL DEFAULT 1,
+	created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+	updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+	PRIMARY KEY (id),
+	UNIQUE (workspace_id, study_id),
+	CONSTRAINT ck_submission_status CHECK (status IN ('SUBMITTED','APPROVED','REJECTED')),
+	FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE RESTRICT,
+	FOREIGN KEY(study_id) REFERENCES studies (id) ON DELETE RESTRICT,
+	FOREIGN KEY(submitter_user_id) REFERENCES users (id) ON DELETE RESTRICT,
+	FOREIGN KEY(reviewer_user_id) REFERENCES users (id) ON DELETE RESTRICT,
+	INDEX ix_submissions_workspace_id (workspace_id),
+	INDEX ix_submissions_study_id (study_id),
+	INDEX ix_submissions_submitter_user_id (submitter_user_id),
+	INDEX ix_submissions_reviewer_user_id (reviewer_user_id)
+)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS submission_review_history (
+	id BIGINT NOT NULL AUTO_INCREMENT,
+	submission_id BIGINT NOT NULL,
+	actor_user_id BIGINT NOT NULL,
+	action VARCHAR(16) NOT NULL,
+	status VARCHAR(16) NOT NULL,
+	revision INTEGER NOT NULL,
+	reason VARCHAR(1000),
+	created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+	updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+	PRIMARY KEY (id),
+	CONSTRAINT ck_review_history_action CHECK (action IN ('SUBMIT','RESUBMIT','APPROVE','REJECT')),
+	CONSTRAINT ck_review_history_status CHECK (status IN ('SUBMITTED','APPROVED','REJECTED')),
+	FOREIGN KEY(submission_id) REFERENCES submissions (id) ON DELETE RESTRICT,
+	FOREIGN KEY(actor_user_id) REFERENCES users (id) ON DELETE RESTRICT,
+	INDEX ix_submission_review_history_submission_id (submission_id),
+	INDEX ix_submission_review_history_actor_user_id (actor_user_id),
+	INDEX ix_review_history_submission_created (submission_id, created_at)
 )ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
 

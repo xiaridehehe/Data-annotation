@@ -38,8 +38,8 @@ $backendCmd = Join-Path $root 'run-backend.cmd'
 @"
 @echo off
 set ANNOTATION_DATABASE_URL=mysql+pymysql://annotation_app:$appPassword@127.0.0.1:3306/annotation_db
-set ANNOTATION_ALLOWED_ORIGINS=http://8.156.76.242
-set ANNOTATION_COOKIE_SECURE=0
+set ANNOTATION_ALLOWED_ORIGINS=https://annotation.com.cn
+set ANNOTATION_COOKIE_SECURE=1
 cd /d C:\AnnotationApp\current
 C:\AnnotationApp\current\.venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --workers 2
 "@ | Set-Content -Encoding ascii $backendCmd
@@ -47,7 +47,7 @@ icacls $backendCmd /inheritance:r /grant:r 'SYSTEM:F' 'Administrators:F' | Out-N
 
 $caddyFile = Join-Path $root 'Caddyfile'
 @"
-:80 {
+annotation.com.cn {
     encode zstd gzip
     handle /api/* {
         reverse_proxy 127.0.0.1:8000
@@ -57,6 +57,10 @@ $caddyFile = Join-Path $root 'Caddyfile'
         try_files {path} /index.html
         file_server
     }
+}
+
+www.annotation.com.cn {
+    redir https://annotation.com.cn{uri} permanent
 }
 "@ | Set-Content -Encoding ascii $caddyFile
 
@@ -75,7 +79,7 @@ Register-RestartingTask 'AnnotationCaddy' 'C:\AnnotationApp\caddy\caddy.exe' 'ru
 
 Start-Sleep -Seconds 8
 $api = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8000/docs' -TimeoutSec 10
-$site = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1/' -TimeoutSec 10
+$site = Invoke-WebRequest -UseBasicParsing -Uri 'https://annotation.com.cn/' -TimeoutSec 30
 Write-Output ('API_STATUS=' + $api.StatusCode)
 Write-Output ('SITE_STATUS=' + $site.StatusCode)
 Get-ScheduledTask -TaskName AnnotationBackend,AnnotationCaddy | Select-Object TaskName,State

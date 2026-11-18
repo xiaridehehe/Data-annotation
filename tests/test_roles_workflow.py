@@ -1,6 +1,6 @@
 from datetime import date
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI,HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine,select,update
 from sqlalchemy.pool import StaticPool
@@ -49,15 +49,22 @@ def test_three_series_submit_reject_resubmit_and_approve():
         db.execute(m.assessments.insert().values(series_id=sid,disease_id=did,target_key='OVERALL',attributes={},status='COMPLETE',version=1))
     submitted=c.post(base+'/studies/1.2.3/submit');assert submitted.status_code==200
     submission_id=submitted.json()['submission']['id']
+    listed=c.get(base+'/submissions').json()['submissions'][0]
+    assert listed['patient_code']=='P1' and listed['patient_id']=='p1'
     with engine.begin() as db:
         assessment=db.execute(select(m.assessments)).mappings().first()
         relational_api.ensure_editable(db,'assessments',assessment,{'role':'REVIEWER'})
-        relational_api.ensure_editable(db,'assessments',assessment,{'role':'ANNOTATOR'})
+        with pytest.raises(HTTPException) as blocked:
+            relational_api.ensure_editable(db,'assessments',assessment,{'role':'ANNOTATOR'})
+        assert blocked.value.status_code==409
     c.post('/api/auth/logout');register(c,'reviewer')
     with engine.begin() as db: db.execute(update(m.users).where(m.users.c.username=='reviewer').values(role='REVIEWER'))
     assert c.post(base+f'/submissions/{submission_id}/review',json={'action':'reject','reason':''}).status_code==422
     rejected=c.post(base+f'/submissions/{submission_id}/review',json={'action':'reject','reason':'属性需要复核'})
     assert rejected.status_code==200 and rejected.json()['submission']['status']=='REJECTED'
+    with engine.begin() as db:
+        assessment=db.execute(select(m.assessments)).mappings().first()
+        relational_api.ensure_editable(db,'assessments',assessment,{'role':'ANNOTATOR'})
     c.post('/api/auth/logout');login=c.post('/api/auth/login',json={'username':'annotator','password':'pass123'});assert login.status_code==200
     resubmitted=c.post(base+'/studies/1.2.3/submit');assert resubmitted.json()['submission']['revision']==2
     c.post('/api/auth/logout');c.post('/api/auth/login',json={'username':'reviewer','password':'pass123'})
@@ -67,10 +74,15 @@ def test_three_series_submit_reject_resubmit_and_approve():
         study_id=db.execute(select(m.studies.c.id)).scalar()
         relational_api.mark_submission_changed(db,{study_id},{'role':'ANNOTATOR'})
         changed=db.execute(select(m.submissions)).mappings().one()
-        assert changed['status']=='SUBMITTED' and changed['revision']==2 and changed['reviewer_user_id'] is None
+        assert changed['status']=='APPROVED' and changed['revision']==2 and changed['reviewer_user_id'] is not None
         history=db.execute(select(m.submission_review_history).order_by(m.submission_review_history.c.id)).mappings().all()
         assert [item['action'] for item in history]==['SUBMIT','REJECT','RESUBMIT','APPROVE']
         assert [item['revision'] for item in history]==[1,1,2,2]
+        assert history[0]['snapshot'] is not None and history[2]['snapshot'] is not None
+        assert history[1]['snapshot'] is None and history[3]['snapshot'] is None
+    c.post('/api/auth/logout');c.post('/api/auth/login',json={'username':'annotator','password':'pass123'})
+    third=c.post(base+'/studies/1.2.3/submit')
+    assert third.status_code==200 and third.json()['submission']['revision']==3
 
 def test_admin_user_management_and_last_admin_guard():
     c,engine=app_client();register(c,'rootadmin')

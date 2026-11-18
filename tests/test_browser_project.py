@@ -27,11 +27,23 @@ def setup(c):
     assert c.get(base+'/state').status_code==200
     ops=[operation('patients',dict(id='patient-key',patient_code='P001',issuer='hospital'))]
     for n in (1,2):
-        ops.extend([operation('studies',dict(id=f'1.2.{n}',patient_id='patient-key',date='20260101',description=f'check{n}')),
+        ops.extend([operation('studies',dict(id=f'1.2.{n}',patient_id='patient-key',date='20260101',description=f'check{n}',source_patient_folder='P001-folder',source_study_folder=f'exam-{n}')),
             operation('series',dict(id=f'1.2.{n}.1',study_id=f'1.2.{n}',description='series',orientation='SAG')),
             operation('instances',dict(id=f'1.2.{n}.1.1',series_id=f'1.2.{n}.1',width=100,height=100,order=0))])
     r=c.post(base+'/changes',json={'operations':ops});assert r.status_code==200,r.text
     return base
+
+def test_catalog_and_selected_study_state(client):
+    c,_=client;base=setup(c)
+    catalog=c.get(base+'/state?catalog_only=true').json()['state']
+    assert len(catalog['studies'])==2 and len(catalog['series'])==2
+    assert catalog['instances']==[] and catalog['lesions']==[] and catalog['boxes']==[]
+    selected=c.get(base+'/state?study_uid=1.2.1').json()['state']
+    assert len(selected['studies'])==2 and len(selected['series'])==2
+    assert selected['instances'] and {x['series_id'] for x in selected['instances']}=={'1.2.1.1'}
+    selected_study=next(x for x in selected['studies'] if x['id']=='1.2.1')
+    assert selected_study['source_patient_folder']=='P001-folder' and selected_study['source_study_folder']=='exam-1'
+    assert c.get(base+'/state?study_uid=missing').status_code==404
 
 def test_same_patient_multiple_studies_and_scoped_ids(client):
     c,engine=client;a=setup(c);b=setup(c)

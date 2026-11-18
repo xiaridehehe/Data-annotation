@@ -23,7 +23,10 @@ const context={exports:{},structuredClone,TextDecoder,TextEncoder,Uint8Array,Map
  }};
 vm.runInNewContext(code,context);
 (async()=>{
- const {req}=context.exports;
+ const {req,inferSourceFolders}=context.exports;
+ assert.deepEqual({...inferSourceFolders('P001/右膝检查/序列1/1.dcm','P001')},{patientFolder:'P001',studyFolder:'右膝检查'});
+ assert.deepEqual({...inferSourceFolders('P001-脱敏/右膝检查/序列1/1.dcm','P001')},{patientFolder:'P001-脱敏',studyFolder:'右膝检查'});
+ assert.deepEqual({...inferSourceFolders('右膝检查/序列1/1.dcm','P001')},{patientFolder:'P001',studyFolder:'右膝检查'});
  await req('/state');
  await req('/lesions','PUT',{id:'lesion',series_id:'series',disease_type_id:'ACL_INJURY',attributes_json:{}});
  assert.equal(requests.at(-1).operations.length,1);

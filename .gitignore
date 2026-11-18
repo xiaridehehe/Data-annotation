@@ -7,3 +7,7 @@ backend/data/
 .deploy/
 *.db
 frontend/dist/
+.docx-render/
+.tutorial-render/
+frontend-dist-deploy/
+~$*.docx

@@ -24,7 +24,12 @@ function prepareViewer() {
     RenderingEngine = core.RenderingEngine;
     Enums = core.Enums;
     await core.init();
-    loader.init({ maxWebWorkers: 2 });
+    loader.init({
+      maxWebWorkers: Math.min(
+        8,
+        Math.max(4, (navigator.hardwareConcurrency || 4) - 1),
+      ),
+    });
     await prepareImages();
   }));
 }
@@ -265,6 +270,7 @@ function App({
       let result = await importLocal(input.files, {
         localOnly: !!reviewSubmission,
         expectedStudyUid: reviewSubmission ? activeStudyId || undefined : undefined,
+        onProgress: msg,
       });
       if (!result.imported && result.wrongStudyCount) {
         msg("所选 DICOM 与当前检查不匹配");
@@ -992,7 +998,7 @@ function App({
         vp.current = engine.current.getViewport("stack");
       }
       if (images.length) {
-        imageMsg("正在加载 DICOM 像素…");
+        imageMsg("正在加载首张影像…");
         await vp.current.setStack(
           images.map((x) => imageId(x.id)),
           idx,

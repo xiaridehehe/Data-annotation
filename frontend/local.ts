@@ -78,11 +78,13 @@ function db() {
     r.onerror = () => reject(r.error);
   }));
 }
-async function cacheImage(uid: string, file: File) {
+async function cacheImages(items: Array<{ uid: string; file: File }>) {
+  if (!items.length) return;
   let d = await db();
   await new Promise<void>((resolve, reject) => {
     let t = d.transaction("dicom", "readwrite");
-    t.objectStore("dicom").put(file, uid);
+    let store = t.objectStore("dicom");
+    for (let { uid, file } of items) store.put(file, uid);
     t.oncomplete = () => resolve();
     t.onerror = () => reject(t.error);
     t.onabort = () => reject(t.error);
@@ -500,9 +502,16 @@ export function req(path, method = "GET", data?): Promise<any> {
 }
 export async function importLocal(
   input: FileList | File[],
-  options: { localOnly?: boolean; expectedStudyUid?: string } = {},
+  options: {
+    localOnly?: boolean;
+    expectedStudyUid?: string;
+    onProgress?: (message: string) => void;
+  } = {},
 ) {
   let { parseDicom, wadouri } = await loadDicomDependencies();
+  let progress = (message: string) => options.onProgress?.(message);
+  progress("正在扫描文件…");
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   let entries: File[] = [];
   for (let f of Array.from(input)) {
     if (f.name.toLowerCase().endsWith(".zip")) {
@@ -513,6 +522,7 @@ export async function importLocal(
           entries.push(new File([bytes as BlobPart], name));
     } else entries.push(f);
   }
+  progress(`正在解析元数据 0/${entries.length}`);
   let task = queue.then(async () => {
     // Every import starts from a fresh server snapshot. Ordinary imports may
     // introduce a new study, so a cached state from the previously viewed study
@@ -527,11 +537,32 @@ export async function importLocal(
       uids = new Set(),
       seriesIds = new Set(),
       studyIds = new Set(),
-      wrongStudyCount = 0;
-    for (let f of entries)
+      wrongStudyCount = 0,
+      cachedImages: Array<{ uid: string; file: File }> = [],
+      indexedKinds = ["patients", "studies", "series", "instances"],
+      indexes = Object.fromEntries(
+        indexedKinds.map((kind) => [
+          kind,
+          new Map<string, number>(
+            (s[kind] || []).map((item, index) => [String(item.id), index]),
+          ),
+        ]),
+      ) as Record<string, Map<string, number>>,
+      upsertIndexed = (kind: string, record: any) => {
+        let index = indexes[kind].get(record.id);
+        if (index === undefined) {
+          indexes[kind].set(record.id, s[kind].length);
+          s[kind].push(record);
+        } else s[kind][index] = record;
+        return record;
+      },
+      nextIndex = { value: 0 },
+      completed = { value: 0 },
+      reportEvery = Math.max(1, Math.floor(entries.length / 100));
+    let parseEntry = async (f: File) => {
       try {
         let ds = parseDicom(new Uint8Array(await f.arrayBuffer()));
-        if (!ds.elements.x7fe00010) continue;
+        if (!ds.elements.x7fe00010) return;
         if (Number(ds.string("x00280008") || 1) > 1)
           throw Error("暂不支持多帧 DICOM，请导入单帧影像");
         let val = (t) => ds.string(t) || "",
@@ -552,7 +583,7 @@ export async function importLocal(
             file: f.name,
             error: `不属于当前检查（DICOM Study UID：${study}）`,
           });
-          continue;
+          return;
         }
         let relativePath = (f as any).webkitRelativePath || f.name || "",
           sourceFolders = inferSourceFolders(relativePath, patientCode),
@@ -570,13 +601,14 @@ export async function importLocal(
             n.map(Math.abs).indexOf(Math.max(...n.map(Math.abs)))
           ];
         }
-        upsert(s, "patients", {
-          ...s.patients.find((x) => x.id === patient),
+        let patientIndex = indexes.patients.get(patient);
+        upsertIndexed("patients", {
+          ...(patientIndex === undefined ? {} : s.patients[patientIndex]),
           id: patient,
           patient_code: patientCode || null,
           issuer: issuer || null,
         });
-        upsert(s, "studies", {
+        upsertIndexed("studies", {
           id: study,
           patient_id: patient,
           description: dicomText(ds, "x00081030"),
@@ -586,7 +618,7 @@ export async function importLocal(
           study_time: val("x00080030"),
           accession_number: val("x00080050"),
         });
-        upsert(s, "series", {
+        upsertIndexed("series", {
           id: series,
           study_id: study,
           description:
@@ -597,7 +629,7 @@ export async function importLocal(
           orientation: axis,
           modality: val("x00080060") || "MR",
         });
-        upsert(s, "instances", {
+        upsertIndexed("instances", {
           id: uid,
           series_id: series,
           width: ds.uint16("x00280011"),
@@ -612,8 +644,7 @@ export async function importLocal(
             .map(Number),
           metadata: {},
         });
-        await cacheImage(uid, f);
-        files.set(uid, wadouri.fileManager.add(f));
+        cachedImages.push({ uid, file: f });
         uids.add(uid);
         seriesIds.add(series);
         studyIds.add(study);
@@ -621,7 +652,34 @@ export async function importLocal(
         count++;
       } catch (e) {
         errors.push({ file: f.name, error: String(e) });
+      } finally {
+        completed.value++;
+        if (
+          completed.value === entries.length ||
+          completed.value % reportEvery === 0
+        )
+          progress(`正在解析元数据 ${completed.value}/${entries.length}`);
       }
+    };
+    let workerCount = Math.min(
+      entries.length,
+      Math.min(8, Math.max(4, navigator.hardwareConcurrency || 4)),
+    );
+    await Promise.all(
+      Array.from({ length: workerCount }, async () => {
+        while (true) {
+          let index = nextIndex.value++;
+          if (index >= entries.length) return;
+          await parseEntry(entries[index]);
+        }
+      }),
+    );
+    if (cachedImages.length) {
+      progress("正在写入本地缓存…");
+      await cacheImages(cachedImages);
+      for (let { uid, file } of cachedImages)
+        files.set(uid, wadouri.fileManager.add(file));
+    }
     if (count && !options.localOnly) {
       // Reimport restores soft-deleted hierarchy before comparing metadata. Use a fresh
       // server baseline so hidden rows are never mistaken for new records.

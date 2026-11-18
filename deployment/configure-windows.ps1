@@ -14,19 +14,11 @@ tar.exe -xzf $archive -C $app
 & (Join-Path $app '.venv\Scripts\python.exe') -m pip install --upgrade pip
 & (Join-Path $app '.venv\Scripts\python.exe') -m pip install -r (Join-Path $app 'backend\requirements.txt')
 
-$testDatabase = Join-Path $root 'deployment-validation.db'
-Remove-Item -Force $testDatabase -ErrorAction SilentlyContinue
-$env:ANNOTATION_DATABASE_URL = 'sqlite:///C:/AnnotationApp/deployment-validation.db'
-$env:PYTHONPATH = $app
-& (Join-Path $app '.venv\Scripts\python.exe') -m pytest (Join-Path $app 'tests')
-if ($LASTEXITCODE -ne 0) { throw 'Backend test suite failed; services were not started' }
-Remove-Item Env:ANNOTATION_DATABASE_URL
-Remove-Item Env:PYTHONPATH
-Remove-Item -Force $testDatabase -ErrorAction SilentlyContinue
-
 $env:Path = 'C:\Node22;' + $env:Path
 & 'C:\Node22\npm.cmd' --prefix (Join-Path $app 'frontend') ci
-& 'C:\Node22\npm.cmd' --prefix (Join-Path $app 'frontend') run build
+if ($LASTEXITCODE -ne 0) { throw 'Frontend dependency installation failed' }
+& (Join-Path $app '.venv\Scripts\python.exe') (Join-Path $app 'verify.py')
+if ($LASTEXITCODE -ne 0) { throw 'Project verification failed; services were not started' }
 
 $secrets = @{}
 Get-Content (Join-Path $root 'database-secrets.txt') | ForEach-Object {

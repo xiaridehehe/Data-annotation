@@ -505,6 +505,7 @@ export async function importLocal(
   options: {
     localOnly?: boolean;
     expectedStudyUid?: string;
+    readOnlyStudyUids?: string[];
     onProgress?: (message: string) => void;
   } = {},
 ) {
@@ -537,6 +538,11 @@ export async function importLocal(
       uids = new Set(),
       seriesIds = new Set(),
       studyIds = new Set(),
+      writableUids = new Set(),
+      writableSeriesIds = new Set(),
+      writableStudyIds = new Set(),
+      readOnlyStudyUids = new Set(options.readOnlyStudyUids || []),
+      importedReadOnlyStudyIds = new Set(),
       wrongStudyCount = 0,
       cachedImages: Array<{ uid: string; file: File }> = [],
       indexedKinds = ["patients", "studies", "series", "instances"],
@@ -648,6 +654,12 @@ export async function importLocal(
         uids.add(uid);
         seriesIds.add(series);
         studyIds.add(study);
+        if (readOnlyStudyUids.has(study)) importedReadOnlyStudyIds.add(study);
+        else {
+          writableUids.add(uid);
+          writableSeriesIds.add(series);
+          writableStudyIds.add(study);
+        }
         setStudyHidden(study, false);
         count++;
       } catch (e) {
@@ -680,12 +692,12 @@ export async function importLocal(
       for (let { uid, file } of cachedImages)
         files.set(uid, wadouri.fileManager.add(file));
     }
-    if (count && !options.localOnly) {
+    if (writableStudyIds.size && !options.localOnly) {
       // Reimport restores soft-deleted hierarchy before comparing metadata. Use a fresh
       // server baseline so hidden rows are never mistaken for new records.
       let imported = s;
       let restored = await remote("/reimport", {
-        series_uids: Array.from(seriesIds),
+        series_uids: Array.from(writableSeriesIds),
       });
       currentState = restored.state;
       s = structuredClone(currentState);
@@ -694,13 +706,14 @@ export async function importLocal(
           let included =
             k === "patients"
               ? imported.studies.some(
-                  (st) => studyIds.has(st.id) && st.patient_id === item.id,
+                  (st) =>
+                    writableStudyIds.has(st.id) && st.patient_id === item.id,
                 )
               : k === "studies"
-                ? studyIds.has(item.id)
+                ? writableStudyIds.has(item.id)
                 : k === "series"
-                  ? seriesIds.has(item.id)
-                  : uids.has(item.id);
+                  ? writableSeriesIds.has(item.id)
+                  : writableUids.has(item.id);
           if (included)
             upsert(s, k, {
               ...item,
@@ -721,6 +734,7 @@ export async function importLocal(
       skipped: errors,
       wrongStudyCount,
       studyIds: Array.from(studyIds),
+      readOnlyStudyIds: Array.from(importedReadOnlyStudyIds),
       state: options.localOnly ? structuredClone(s) : undefined,
     };
   });

@@ -284,17 +284,13 @@ function App({
           // the refresh request is temporarily unavailable.
         }
       }
-      const submittedReadOnly =
-          !reviewSubmission &&
-          user.role === "ANNOTATOR" &&
-          latestSubmissions.some(
-            (item) =>
-              item.study_uid === importStudyId && item.status === "SUBMITTED",
-          ),
-        localPixelOnly = !!reviewSubmission || submittedReadOnly;
+      const readOnlyStudyUids = latestSubmissions
+        .filter((item) => item.status === "SUBMITTED")
+        .map((item) => item.study_uid);
       let result = await importLocal(input.files, {
-        localOnly: localPixelOnly,
-        expectedStudyUid: localPixelOnly ? importStudyId || undefined : undefined,
+        localOnly: !!reviewSubmission,
+        expectedStudyUid: reviewSubmission ? importStudyId || undefined : undefined,
+        readOnlyStudyUids,
         onProgress: msg,
       });
       if (!result.imported && result.wrongStudyCount) {
@@ -317,8 +313,10 @@ function App({
         );
       }
       if (result.state) set(restrictToReviewStudy(result.state));
+      const importedStudy =
+          result.studyIds?.[0] || activeStudyId || loadedStudy.current,
+        importedReadOnly = result.readOnlyStudyIds?.includes(importedStudy);
       if (!reviewSubmission) {
-        let importedStudy = result.studyIds?.[0] || activeStudyId || loadedStudy.current;
         // Load the imported study first, then select from that returned state.
         // Clearing sid before refresh lets the automatic selector race against
         // this request and select the previous study again.
@@ -334,7 +332,7 @@ function App({
       RV((value) => value + 1);
       msg(
         `本机已读取 ${result.imported} 张，跳过 ${result.skipped.length} 个文件` +
-          (submittedReadOnly ? " · 当前检查保持只读" : ""),
+          (importedReadOnly ? " · 当前检查保持只读" : ""),
       );
     } catch (error) {
       msg("DICOM 导入失败：" + String(error));

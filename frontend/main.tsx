@@ -143,7 +143,9 @@ function App({
       selectedPatient?.id ||
       "未知 Patient ID";
   let [submissions, setSubmissions] = S<any[]>([]);
-  let currentSubmission = submissions.find((item) => item.study_uid === study),
+  let currentSubmission = submissions.find(
+      (item) => item.study_uid === activeStudyId,
+    ),
     pendingAnnotatorReview =
       !reviewSubmission &&
       user.role === "ANNOTATOR" &&
@@ -269,10 +271,30 @@ function App({
     try {
       // A submitted study remains server-side read-only, but its local pixels
       // may be reattached so the annotator can continue to view the images.
-      const localPixelOnly = !!reviewSubmission || pendingAnnotatorReview;
+      const importStudyId =
+        activeStudyId || displayedStudies[0]?.id || loadedStudy.current;
+      let latestSubmissions = submissions;
+      if (!reviewSubmission && user.role === "ANNOTATOR") {
+        try {
+          const latest = await workflowRequest("/submissions");
+          latestSubmissions = latest.submissions || [];
+          setSubmissions(latestSubmissions);
+        } catch {
+          // Import can still use the already loaded submission snapshot when
+          // the refresh request is temporarily unavailable.
+        }
+      }
+      const submittedReadOnly =
+          !reviewSubmission &&
+          user.role === "ANNOTATOR" &&
+          latestSubmissions.some(
+            (item) =>
+              item.study_uid === importStudyId && item.status === "SUBMITTED",
+          ),
+        localPixelOnly = !!reviewSubmission || submittedReadOnly;
       let result = await importLocal(input.files, {
         localOnly: localPixelOnly,
-        expectedStudyUid: localPixelOnly ? activeStudyId || undefined : undefined,
+        expectedStudyUid: localPixelOnly ? importStudyId || undefined : undefined,
         onProgress: msg,
       });
       if (!result.imported && result.wrongStudyCount) {
@@ -312,7 +334,7 @@ function App({
       RV((value) => value + 1);
       msg(
         `本机已读取 ${result.imported} 张，跳过 ${result.skipped.length} 个文件` +
-          (pendingAnnotatorReview ? " · 当前检查保持只读" : ""),
+          (submittedReadOnly ? " · 当前检查保持只读" : ""),
       );
     } catch (error) {
       msg("DICOM 导入失败：" + String(error));

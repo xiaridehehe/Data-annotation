@@ -14,6 +14,7 @@ import {
   locallyHiddenStudies,
   removeLocalStudyImages,
 } from "./local";
+import { annotationRecommendation } from "./seriesRecommendation";
 let RenderingEngine: any, Enums: any, viewerReady: Promise<void>;
 function prepareViewer() {
   return (viewerReady ||= Promise.all([
@@ -1942,10 +1943,20 @@ function App({
                     </p>
                     {s.series
                       .filter((x) => x.study_id === st.id)
-                      .map((x) => (
-                        <div key={x.id}>
+                      .map((x) => {
+                        const recommendation = annotationRecommendation(x);
+                        return (
+                        <div
+                          key={x.id}
+                          className={recommendation ? "recommended-series" : ""}
+                        >
                           <button
                             className={sid === x.id ? "active" : ""}
+                            title={
+                              recommendation
+                                ? `推荐标注：${recommendation.planeLabel} · ${recommendation.weighting}`
+                                : undefined
+                            }
                             onClick={() => {
                               if (allowLeave()) {
                                 series(x.id);
@@ -1957,7 +1968,14 @@ function App({
                               }
                             }}
                           >
-                            {x.number} · {x.description}
+                            <span className="series-title-line">
+                              <span>{x.number} · {x.description}</span>
+                              {recommendation && (
+                                <span className="annotation-required-badge">
+                                  需要标注
+                                </span>
+                              )}
+                            </span>
                             <small>
                               {x.orientation} ·{" "}
                               {
@@ -1983,7 +2001,7 @@ function App({
                             </small>
                           </button>
                         </div>
-                      ))}
+                      )})}
                     {reviewSubmission && st.id === reviewSubmission.study_uid && (
                       <SubmissionChanges
                         changes={reviewChanges}

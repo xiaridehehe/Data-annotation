@@ -267,9 +267,12 @@ function App({
     if (!input.files?.length) return;
     msg("正在读取本机 DICOM");
     try {
+      // A submitted study remains server-side read-only, but its local pixels
+      // may be reattached so the annotator can continue to view the images.
+      const localPixelOnly = !!reviewSubmission || pendingAnnotatorReview;
       let result = await importLocal(input.files, {
-        localOnly: !!reviewSubmission,
-        expectedStudyUid: reviewSubmission ? activeStudyId || undefined : undefined,
+        localOnly: localPixelOnly,
+        expectedStudyUid: localPixelOnly ? activeStudyId || undefined : undefined,
         onProgress: msg,
       });
       if (!result.imported && result.wrongStudyCount) {
@@ -307,7 +310,10 @@ function App({
         CB(null);
       }
       RV((value) => value + 1);
-      msg(`本机已读取 ${result.imported} 张，跳过 ${result.skipped.length} 个文件`);
+      msg(
+        `本机已读取 ${result.imported} 张，跳过 ${result.skipped.length} 个文件` +
+          (pendingAnnotatorReview ? " · 当前检查保持只读" : ""),
+      );
     } catch (error) {
       msg("DICOM 导入失败：" + String(error));
       alert("DICOM 导入失败：" + String(error));

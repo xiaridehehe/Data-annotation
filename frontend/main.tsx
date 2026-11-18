@@ -80,6 +80,7 @@ function App({
       checking: true,
     }),
     [imageStatus, imageMsg] = S("请选择序列"),
+    [studyClosed, setStudyClosed] = S(false),
     [draft, D] = S<any>(null),
     [history, H] = S<any[]>([]),
     [future, F] = S<any[]>([]);
@@ -120,8 +121,11 @@ function App({
         x.disease_type_id === di &&
         (di !== "MENISCUS_INJURY" || x.target_key === target),
     );
-  let activeStudyId = reviewSubmission?.study_uid || study,
-    displayedStudies = activeStudyId
+  let activeStudyId =
+      studyClosed && !reviewSubmission ? "" : reviewSubmission?.study_uid || study,
+    displayedStudies = studyClosed && !reviewSubmission
+      ? []
+      : activeStudyId
       ? s.studies.filter((x) => x.id === activeStudyId)
       : s.studies.slice(0, 1),
     selectedStudy = s.studies.find((x) => x.id === activeStudyId),
@@ -317,6 +321,7 @@ function App({
           result.studyIds?.[0] || activeStudyId || loadedStudy.current,
         importedReadOnly = result.readOnlyStudyIds?.includes(importedStudy);
       if (!reviewSubmission) {
+        setStudyClosed(false);
         // Load the imported study first, then select from that returned state.
         // Clearing sid before refresh lets the automatic selector race against
         // this request and select the previous study again.
@@ -342,6 +347,7 @@ function App({
     }
   }
   E(() => {
+    if (studyClosed && !reviewSubmission) return;
     if (s.series.length) {
       let current = s.series.find(
         (x) =>
@@ -360,7 +366,7 @@ function App({
       if (first && loadedStudy.current !== first.study_id)
         refresh(first.study_id).catch((e) => msg(String(e)));
     }
-  }, [reviewSubmission?.id, s.series.length, sid]);
+  }, [reviewSubmission?.id, s.series.length, sid, studyClosed]);
   E(() => {
     let visible = () => {
       if (
@@ -933,6 +939,8 @@ function App({
         .filter((x) => targetSeries.includes(x.series_id))
         .map((x) => x.id);
       if (!reviewSubmission) {
+        setStudyClosed(true);
+        loadedStudy.current = "";
         // Remove the study from the ordinary user's view in the same render as
         // the click. Do not leave the old series mounted while IndexedDB and
         // the server catalog refresh finish in the background.

@@ -2731,7 +2731,8 @@ function ImageReviewDashboard({ user, onLogout, admin = false }) {
   const [items, setItems] = S<any[]>([]),
     [selected, setSelected] = S<any>(null),
     [error, setError] = S(""),
-    [accounts, setAccounts] = S(false);
+    [accounts, setAccounts] = S(false),
+    [reviewFilter, setReviewFilter] = S<"ALL" | "REVIEWED" | "PENDING">("ALL");
   async function load() {
     try {
       let result = await workflowRequest("/submissions");
@@ -2803,6 +2804,15 @@ function ImageReviewDashboard({ user, onLogout, admin = false }) {
       </div>
     );
     }
+  const pendingCount = items.filter((item) => item.status === "SUBMITTED").length,
+    reviewedCount = items.length - pendingCount,
+    visibleItems = items.filter((item) =>
+      reviewFilter === "ALL"
+        ? true
+        : reviewFilter === "PENDING"
+          ? item.status === "SUBMITTED"
+          : item.status !== "SUBMITTED",
+    );
   return (
     <div className="management-shell">
       <header>
@@ -2822,7 +2832,26 @@ function ImageReviewDashboard({ user, onLogout, admin = false }) {
         <p>
           待审核项目可进入影像界面查看和修改；已通过、已驳回项目仍可进入查看，但不能修改或再次审核。
         </p>
-        {items.map((item) => (
+        <div className="review-filters" role="group" aria-label="审核状态筛选">
+          {[
+            ["ALL", "全部", items.length],
+            ["REVIEWED", "已审核", reviewedCount],
+            ["PENDING", "未审核", pendingCount],
+          ].map(([value, label, count]) => (
+            <button
+              key={value}
+              className={reviewFilter === value ? "active" : ""}
+              aria-pressed={reviewFilter === value}
+              onClick={() => setReviewFilter(value as "ALL" | "REVIEWED" | "PENDING")}
+            >
+              {label} <span>{count}</span>
+            </button>
+          ))}
+        </div>
+        {!visibleItems.length && (
+          <p className="review-empty">当前筛选条件下没有审核记录。</p>
+        )}
+        {visibleItems.map((item) => (
           <article className="review-card" key={item.id}>
             <div>
               <b>{item.study_description || item.study_uid}</b>

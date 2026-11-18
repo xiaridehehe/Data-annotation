@@ -49,7 +49,9 @@ patients = table('patients', ref('workspace_id', 'workspaces.id'),
     Index('ix_patient_identity', 'workspace_id', 'patient_code', 'issuer'))
 studies = table('studies', ref('workspace_id', 'workspaces.id'), Column('patient_id', ID, nullable=False, index=True),
     Column('study_uid', String(64), nullable=False), Column('accession_number', String(128)),
-    Column('description', String(512), nullable=False, default=''), Column('study_date', Date),
+    Column('description', String(512), nullable=False, default=''),
+    Column('source_patient_folder', String(512)), Column('source_study_folder', String(512)),
+    Column('study_date', Date),
     Column('study_time', Time().with_variant(TIME(fsp=6), 'mysql')), deleted(), version(),
     ForeignKeyConstraint(['patient_id','workspace_id'], ['patients.id','patients.workspace_id']),
     UniqueConstraint('workspace_id','study_uid'))
@@ -124,6 +126,6 @@ submissions = table('submissions', ref('workspace_id','workspaces.id'), ref('stu
 submission_review_history = table('submission_review_history', ref('submission_id','submissions.id'),
     ref('actor_user_id','users.id'), Column('action',String(16),nullable=False),
     Column('status',String(16),nullable=False), Column('revision',Integer,nullable=False),
-    Column('reason',String(1000)),
+    Column('reason',String(1000)), Column('snapshot',JSON),
     CheckConstraint("action IN ('SUBMIT','RESUBMIT','APPROVE','REJECT')", name='ck_review_history_action'),
     CheckConstraint("status IN ('SUBMITTED','APPROVED','REJECTED')", name='ck_review_history_status'))

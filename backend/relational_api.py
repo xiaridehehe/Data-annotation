@@ -124,7 +124,10 @@ def values(c, kind, wid, d):
             else: tm=None
         except (ValueError,TypeError): fail('检查时间格式错误')
         return dict(workspace_id=wid,patient_id=patient['id'],study_uid=uid(key),study_date=date,study_time=tm,
-                    accession_number=limited(d.get('accession_number','') or '',128,'申请号',True),description=limited(d.get('description',''),512,'检查描述',True))
+                    accession_number=limited(d.get('accession_number','') or '',128,'申请号',True),
+                    description=limited(d.get('description',''),512,'检查描述',True),
+                    source_patient_folder=limited(d.get('source_patient_folder','') or '',512,'患者文件夹名称',True) or None,
+                    source_study_folder=limited(d.get('source_study_folder','') or '',512,'检查文件夹名称',True) or None)
     if kind=='series':
         st=lookup(c,'studies',wid,d.get('study_id'),lock=True)
         if st['deleted_at']: fail('检查已移除',409)
@@ -196,7 +199,7 @@ def values(c, kind, wid, d):
 def encode(kind, r, maps):
     result={'version':r['version']}
     if kind=='patients': result.update(id=r['client_id'],patient_code=r['patient_code'],issuer=r['issuer'])
-    elif kind=='studies': result.update(id=r['study_uid'],patient_id=maps['patients'][r['patient_id']]['client_id'],description=r['description'],date=r['study_date'].strftime('%Y%m%d') if r['study_date'] else '',accession_number=r['accession_number'],study_time=r['study_time'].strftime('%H%M%S.%f') if r['study_time'] else '')
+    elif kind=='studies': result.update(id=r['study_uid'],patient_id=maps['patients'][r['patient_id']]['client_id'],description=r['description'],source_patient_folder=r['source_patient_folder'],source_study_folder=r['source_study_folder'],date=r['study_date'].strftime('%Y%m%d') if r['study_date'] else '',accession_number=r['accession_number'],study_time=r['study_time'].strftime('%H%M%S.%f') if r['study_time'] else '')
     elif kind=='series': result.update(id=r['series_uid'],study_id=maps['studies'][r['study_id']]['study_uid'],description=r['description'],number=r['series_number'] if r['series_number'] is not None else '',orientation=r['plane'],modality=r['modality'])
     elif kind=='instances':
         result.update(id=r['sop_instance_uid'],series_id=maps['series'][r['series_id']]['series_uid'],width=r['width'],height=r['height'],order=r['sort_order'],instance_number=r['instance_number'],metadata={})
@@ -215,8 +218,24 @@ def encode(kind, r, maps):
         if r['source_box_id'] in maps['boxes']: result['source_box_id']=maps['boxes'][r['source_box_id']]['public_id']
     return result
 
-def state(c,wid):
-    maps={k:{r['id']:r for r in c.execute(scoped(k,wid)).mappings()} for k in KINDS}
+def state(c,wid,study_uid=None,catalog_only=False):
+    # The navigation catalog is small and is always returned. Annotation-heavy
+    # tables are limited to the selected study so opening the app does not load
+    # every image, lesion and box in the workspace.
+    maps={k:{} for k in KINDS}
+    for kind in ('patients','studies','series','diseases'):
+        maps[kind]={r['id']:r for r in c.execute(scoped(kind,wid)).mappings()}
+    selected_study_id=None
+    if study_uid:
+        selected_study_id=next((pk for pk,r in maps['studies'].items()
+            if r['study_uid']==study_uid and not r['deleted_at']),None)
+        if selected_study_id is None: fail('检查不存在',404)
+        for kind in ('instances','assessments','lesions','boxes'):
+            query=scoped(kind,wid).where(m.series.c.study_id==selected_study_id)
+            maps[kind]={r['id']:r for r in c.execute(query).mappings()}
+    elif not catalog_only:
+        for kind in ('instances','assessments','lesions','boxes'):
+            maps[kind]={r['id']:r for r in c.execute(scoped(kind,wid)).mappings()}
     hidden_studies={pk for pk,r in maps['studies'].items() if r['deleted_at']}
     hidden_series={pk for pk,r in maps['series'].items() if r['deleted_at'] or r['study_id'] in hidden_studies}
     hidden_lesions={pk for pk,r in maps['lesions'].items() if r['deleted_at'] or r['series_id'] in hidden_series}
@@ -235,14 +254,11 @@ def state(c,wid):
     return result
 
 @router.get('/{public_id}/state')
-def get_state(public_id:str):
+def get_state(public_id:str,study_uid:str|None=None,catalog_only:bool=False):
     try:
         with engine.begin() as c:
             ws=workspace(c,public_id)
-            # Serialize initial snapshot against mutations in this space. Mutations
-            # hold this lock only for their short transaction; versions are per row.
-            c.execute(select(m.workspaces.c.id).where(m.workspaces.c.id==ws['id']).with_for_update()).first()
-            return {'state':state(c,ws['id'])}
+            return {'state':state(c,ws['id'],study_uid,catalog_only)}
     except IntegrityError: fail('空间正在初始化，请重试',409)
 
 def audit(c,wid,actor,kind,key,action,before,after):
@@ -266,6 +282,8 @@ def ensure_editable(c,kind,row,user):
         if role=='REVIEWER': raise HTTPException(403,'审核人员只能修改待审核检查的标注')
         return
     status=c.execute(select(m.submissions.c.status).where(m.submissions.c.study_id==study_id)).scalar()
+    if role=='ANNOTATOR' and status=='SUBMITTED':
+        fail('该检查已提交审核，审核完成前不能修改标注',409)
     if role in ('REVIEWER','ADMIN') and status!='SUBMITTED':
         fail('审核人员只能修改处于待审核状态的检查',409)
 
@@ -276,13 +294,9 @@ def mark_submission_changed(c,study_ids,user):
     for study_id in study_ids:
         row=c.execute(select(m.submissions).where(m.submissions.c.study_id==study_id).with_for_update()).mappings().first()
         if not row: continue
-        values={'updated_at':changed_at}
-        # Editing approved content reopens the same revision. Revisions count
-        # explicit submissions, not individual annotation edits.
-        if role=='ANNOTATOR' and row['status']=='APPROVED':
-            values.update(status='SUBMITTED',reviewer_user_id=None,
-                rejection_reason=None,reviewed_at=None,submitted_at=changed_at)
-        c.execute(update(m.submissions).where(m.submissions.c.id==row['id']).values(**values))
+        # Annotation edits never change workflow status. A new review round only
+        # starts when the annotator explicitly submits the study again.
+        c.execute(update(m.submissions).where(m.submissions.c.id==row['id']).values(updated_at=changed_at))
 
 @router.post('/{public_id}/changes')
 def changes(public_id:str,payload:dict, user=Depends(require_user)):
@@ -293,7 +307,6 @@ def changes(public_id:str,payload:dict, user=Depends(require_user)):
     try:
         with engine.begin() as c:
             ws=workspace(c,public_id);wid=ws['id']
-            c.execute(select(m.workspaces.c.id).where(m.workspaces.c.id==wid).with_for_update()).first()
             output=[];seen=set();touched_studies=set()
             for op in operations:
                 if not isinstance(op,dict): fail('操作格式错误')
@@ -310,7 +323,7 @@ def changes(public_id:str,payload:dict, user=Depends(require_user)):
                 if action=='delete':
                     if not old: fail('记录不存在',404)
                     ensure_editable(c,kind,old,user)
-                    affected=row_study_id(c,kind,old)
+                    affected=row_study_id(c,kind,old) if kind in ('assessments','lesions','boxes') else None
                     if affected: touched_studies.add(affected)
                     if kind not in ('boxes','lesions','assessments'): fail('请使用移除检查或序列接口')
                     c.execute(update(t).where(t.c.id==old['id'],t.c.version==expected).values(deleted_at=stamp(),version=expected+1,updated_at=stamp()))
@@ -319,7 +332,7 @@ def changes(public_id:str,payload:dict, user=Depends(require_user)):
                 if action!='upsert': fail('未知操作')
                 v=values(c,kind,wid,d)
                 ensure_editable(c,kind,old or v,user)
-                affected=row_study_id(c,kind,old or v)
+                affected=row_study_id(c,kind,old or v) if kind in ('assessments','lesions','boxes') else None
                 if affected: touched_studies.add(affected)
                 if old:
                     # Existing image hierarchy is immutable; reimport cannot reparent it.
@@ -348,6 +361,13 @@ def visibility(public_id:str,payload:dict,user=Depends(require_user)):
         c.execute(select(m.workspaces.c.id).where(m.workspaces.c.id==wid).with_for_update()).first()
         row=lookup(c,kind,wid,payload.get('id'),lock=True)
         ensure_editable(c,kind,row,user)
+        study_id=row['id'] if kind=='studies' else row['study_id']
+        submission=c.execute(select(m.submissions.c.id).where(
+            m.submissions.c.workspace_id==wid,m.submissions.c.study_id==study_id)).first()
+        if submission:
+            fail('已经提交审核的检查或序列不能移除，只能继续修改标注',409)
+        if user.get('role') in ('REVIEWER','ADMIN'):
+            fail('审核人员不能移除检查或序列影像数据',403)
         if payload.get('expected_version')!=row['version']: fail('记录已改变，请刷新后重试',409)
         restored=payload.get('restore',False)
         if not isinstance(restored,bool): fail('restore 必须是布尔值')

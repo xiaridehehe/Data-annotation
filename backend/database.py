@@ -38,6 +38,12 @@ def create_database_engine():
         column_type = 'DATETIME(6)' if engine.dialect.name == 'mysql' else 'DATETIME'
         with engine.begin() as connection:
             connection.execute(text('ALTER TABLE assessments ADD COLUMN deleted_at ' + column_type + ' NULL'))
+    study_columns = {column['name'] for column in inspect(engine).get_columns('studies')}
+    with engine.begin() as connection:
+        if 'source_patient_folder' not in study_columns:
+            connection.execute(text('ALTER TABLE studies ADD COLUMN source_patient_folder VARCHAR(512) NULL'))
+        if 'source_study_folder' not in study_columns:
+            connection.execute(text('ALTER TABLE studies ADD COLUMN source_study_folder VARCHAR(512) NULL'))
     log_columns = {column['name'] for column in inspect(engine).get_columns('change_logs')}
     if 'actor_user_id' not in log_columns:
         with engine.begin() as connection:
@@ -49,6 +55,11 @@ def create_database_engine():
     if 'role' not in user_columns:
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR(16) NOT NULL DEFAULT 'ANNOTATOR'"))
+    history_columns = {column['name'] for column in inspect(engine).get_columns('submission_review_history')}
+    if 'snapshot' not in history_columns:
+        snapshot_type = 'JSON' if engine.dialect.name == 'mysql' else 'JSON'
+        with engine.begin() as connection:
+            connection.execute(text('ALTER TABLE submission_review_history ADD COLUMN snapshot ' + snapshot_type + ' NULL'))
     # Bootstrap role management for installations that predate roles. The oldest
     # account becomes the first administrator only when none exists.
     with engine.begin() as connection:

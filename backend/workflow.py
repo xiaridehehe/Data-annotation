@@ -71,10 +71,72 @@ def completeness(c,wid,st):
 def encoded_submission(row):
     return {k:(v.isoformat()+'Z' if isinstance(v,datetime) else v) for k,v in dict(row).items() if k not in ('workspace_id','study_id','submitter_user_id','reviewer_user_id')}
 
-def append_history(c,submission_id,user_id,action,status,revision,reason=None):
+def submission_snapshot(c,study_id):
+    result={}
+    series_rows=c.execute(select(m.series).where(
+        m.series.c.study_id==study_id,m.series.c.deleted_at.is_(None))).mappings().all()
+    disease_rows=c.execute(select(m.diseases)).mappings().all()
+    diseases={row['id']:row for row in disease_rows}
+    for se in series_rows:
+        series_label=f'{se["series_number"] or "?"} · {se["description"] or se["series_uid"]}'
+        image_rows=c.execute(select(m.images.c.id,m.images.c.sop_instance_uid).where(
+            m.images.c.series_id==se['id']).order_by(m.images.c.sort_order,m.images.c.id)).mappings().all()
+        slice_numbers={row['id']:index+1 for index,row in enumerate(image_rows)}
+        for row in c.execute(select(m.assessments).where(
+            m.assessments.c.series_id==se['id'],m.assessments.c.deleted_at.is_(None))).mappings():
+            disease=diseases.get(row['disease_id'])
+            result[f'assessment:{row["id"]}']={
+                'kind':'assessment','label':f'{series_label} · {disease["name"] if disease else "整体评价"}',
+                'series_uid':se['series_uid'],'disease_code':disease['code'] if disease else None,
+                'value':row['attributes'] or {}}
+        lesions=c.execute(select(m.lesions).where(
+            m.lesions.c.series_id==se['id'],m.lesions.c.deleted_at.is_(None))).mappings().all()
+        lesion_map={row['id']:row for row in lesions}
+        boxes=c.execute(select(m.boxes,m.images.c.instance_number,m.images.c.sop_instance_uid).join(
+            m.images,m.boxes.c.image_id==m.images.c.id).where(
+            m.boxes.c.series_id==se['id'],m.boxes.c.deleted_at.is_(None)).order_by(
+            m.images.c.sort_order,m.images.c.id,m.boxes.c.id)).mappings().all()
+        boxes_by_lesion={}
+        for box in boxes: boxes_by_lesion.setdefault(box['lesion_id'],[]).append(box)
+        for lesion in lesions:
+            disease=diseases.get(lesion['disease_id'])
+            anchor=(boxes_by_lesion.get(lesion['id']) or [None])[0]
+            slice_number=slice_numbers.get(anchor['image_id']) if anchor else None
+            result[f'lesion:{lesion["public_id"]}']={
+                'kind':'lesion','label':f'{series_label} · {disease["name"] if disease else "病灶"} · 病灶属性'+
+                    (f' · 第 {slice_number} 个切片' if slice_number else ''),
+                'series_uid':se['series_uid'],'disease_code':disease['code'] if disease else None,
+                'lesion_id':lesion['public_id'],
+                'box_id':anchor['public_id'] if anchor else None,
+                'sop_instance_uid':anchor['sop_instance_uid'] if anchor else None,
+                'slice_index':slice_number,
+                'value':lesion['attributes'] or {}}
+        for box in boxes:
+            lesion=lesion_map.get(box['lesion_id'])
+            disease=diseases.get(lesion['disease_id']) if lesion else None
+            result[f'box:{box["public_id"]}']={
+                'kind':'box','label':f'{series_label} · {disease["name"] if disease else "病灶"} · 第 {slice_numbers.get(box["image_id"],"?")} 个切片',
+                'series_uid':se['series_uid'],'disease_code':disease['code'] if disease else None,
+                'lesion_id':lesion['public_id'] if lesion else None,'box_id':box['public_id'],
+                'sop_instance_uid':box['sop_instance_uid'],'slice_index':slice_numbers.get(box['image_id']),
+                'value':[round(float(box[key]),2) for key in ('x_min','y_min','x_max','y_max')]}
+    return result
+
+def snapshot_changes(previous,current):
+    if current is None: return {'available':False,'reason':'当前提交没有标注快照'}
+    if previous is None: return {'available':True,'first':True,'added':[],'modified':[],'deleted':[]}
+    added=[current[key] for key in current.keys()-previous.keys()]
+    deleted=[previous[key] for key in previous.keys()-current.keys()]
+    modified=[current[key] for key in current.keys()&previous.keys()
+        if current[key].get('value')!=previous[key].get('value')]
+    order=lambda item:item.get('label','')
+    return {'available':True,'first':False,'added':sorted(added,key=order),
+        'modified':sorted(modified,key=order),'deleted':sorted(deleted,key=order)}
+
+def append_history(c,submission_id,user_id,action,status,revision,reason=None,snapshot=None):
     c.execute(m.submission_review_history.insert().values(
         submission_id=submission_id,actor_user_id=user_id,action=action,
-        status=status,revision=revision,reason=reason))
+        status=status,revision=revision,reason=reason,snapshot=snapshot))
 
 def review_history(c,submission_id):
     rows=c.execute(select(m.submission_review_history,m.users.c.username.label('actor_username'),
@@ -83,12 +145,29 @@ def review_history(c,submission_id):
         m.submission_review_history.c.submission_id==submission_id).order_by(
         m.submission_review_history.c.id)).mappings()
     return [{k:(v.isoformat()+'Z' if isinstance(v,datetime) else v) for k,v in dict(row).items()
-        if k not in ('submission_id','actor_user_id')} for row in rows]
+        if k not in ('submission_id','actor_user_id','snapshot')} for row in rows]
+
+def revision_changes(c,submission_id):
+    rows=c.execute(select(m.submission_review_history.c.action,m.submission_review_history.c.snapshot).where(
+        m.submission_review_history.c.submission_id==submission_id).order_by(
+        m.submission_review_history.c.id.desc())).mappings().all()
+    # Revision differences are submission-to-submission only. Review decisions
+    # and intermediate annotation saves are workflow/audit events, not versions.
+    versions=[row for row in rows if row['action'] in ('SUBMIT','RESUBMIT')]
+    if not versions: return {'available':False,'reason':'暂无提交快照'}
+    current=versions[0]['snapshot']
+    previous=versions[1]['snapshot'] if len(versions)>1 else None
+    if len(versions)>1 and previous is None:
+        return {'available':False,'reason':'上一次提交发生在差异记录功能启用之前'}
+    return snapshot_changes(previous,current)
 
 def submission_rows(c,wid,user):
     stmt=select(m.submissions,m.studies.c.study_uid,m.studies.c.description.label('study_description'),
+        m.studies.c.source_patient_folder,m.studies.c.source_study_folder,
+        m.patients.c.patient_code.label('patient_code'),m.patients.c.client_id.label('patient_id'),
         m.users.c.username.label('submitter_username'),m.users.c.display_name.label('submitter_name'))\
         .join(m.studies,m.submissions.c.study_id==m.studies.c.id)\
+        .join(m.patients,m.studies.c.patient_id==m.patients.c.id)\
         .join(m.users,m.submissions.c.submitter_user_id==m.users.c.id)\
         .where(m.submissions.c.workspace_id==wid).order_by(m.submissions.c.updated_at.desc())
     if user['role']=='ANNOTATOR': stmt=stmt.where(m.submissions.c.submitter_user_id==user['id'])
@@ -97,7 +176,8 @@ def submission_rows(c,wid,user):
         item=encoded_submission(row)
         reviewer=c.execute(select(m.users.c.username,m.users.c.display_name).where(m.users.c.id==row['reviewer_user_id'])).mappings().first() if row['reviewer_user_id'] else None
         item['reviewer']=dict(reviewer) if reviewer else None
-        item['history']=review_history(c,row['id']);result.append(item)
+        item['history']=review_history(c,row['id'])
+        item['revision_changes']=revision_changes(c,row['id']);result.append(item)
     return result
 
 @router.get('/{public_id}/submissions')
@@ -115,7 +195,7 @@ def submit_study(public_id:str,study_uid:str,user=Depends(require_user)):
         old=c.execute(select(m.submissions).where(m.submissions.c.workspace_id==ws['id'],m.submissions.c.study_id==st['id']).with_for_update()).mappings().first()
         values=dict(submitter_user_id=user['id'],reviewer_user_id=None,status='SUBMITTED',rejection_reason=None,submitted_at=now(),reviewed_at=None)
         if old:
-            if old['status']=='APPROVED': raise HTTPException(409,'该检查已经审核通过')
+            if old['status']=='SUBMITTED': raise HTTPException(409,'该检查正在等待审核，请勿重复提交')
             values['revision']=old['revision']+1
             c.execute(update(m.submissions).where(m.submissions.c.id==old['id']).values(**values,updated_at=now()))
             submission_id=old['id']
@@ -124,7 +204,8 @@ def submit_study(public_id:str,study_uid:str,user=Depends(require_user)):
             submission_id=c.execute(m.submissions.insert().values(workspace_id=ws['id'],study_id=st['id'],revision=1,**values)).inserted_primary_key[0]
             action='SUBMIT'
         row=c.execute(select(m.submissions).where(m.submissions.c.id==submission_id)).mappings().one()
-        append_history(c,submission_id,user['id'],action,'SUBMITTED',row['revision'])
+        append_history(c,submission_id,user['id'],action,'SUBMITTED',row['revision'],
+            snapshot=submission_snapshot(c,st['id']))
     return {'submission':encoded_submission(row)}
 
 @router.post('/{public_id}/submissions/{submission_id}/review')
